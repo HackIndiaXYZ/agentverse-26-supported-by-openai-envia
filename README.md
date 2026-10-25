@@ -1,6 +1,6 @@
 # Envia
 
-**Envia** is an open-source MCP server and Claude Code plugin for creating, inspecting, and operating isolated working directories ("sandboxes") for AI-agent runs.
+**Envia** is an open-source jail-themed container platform and MCP server for building images, running isolated workloads, managing volumes, and executing AI-agent runs with audit ledgers and change gates.
 
 Official repository: https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia
 
