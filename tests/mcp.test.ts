@@ -8,7 +8,7 @@ describe("MCP server", () => {
     const transport = new StdioClientTransport({
       command: "node",
       args: [path.resolve("dist/mcp/server.js")],
-      env: { ...process.env, ENVIA_HOME: path.join(process.env.TEMP ?? "C:/tmp", "envia-mcp-test") },
+      env: { ...process.env, ENVIA_HOME: path.join(process.env.TEMP ?? "C:/tmp", "envia-mcp-test"), ENVIA_ALLOW_HOST_COMMANDS: "1" },
     });
     const client = new Client({ name: "test", version: "0.0.1" });
     await client.connect(transport);

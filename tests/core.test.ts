@@ -9,7 +9,7 @@ let mgr: SandboxManager;
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), "envia-"));
-  mgr = new SandboxManager({ baseDir: tmp });
+  mgr = new SandboxManager({ baseDir: tmp, allowHostCommands: true });
   await mgr.init();
 });
 
