@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "envia": "dist/cli/main.js",
     "envia-mcp": "dist/mcp/server.js"
   },
   "scripts": {
