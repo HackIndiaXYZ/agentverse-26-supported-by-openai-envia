@@ -1,0 +1,13 @@
+{
+  "name": "envia",
+  "description": "Hermetic, reproducible sandboxed environments for AI agent runs. Exposes Envia MCP tools and slash commands.",
+  "version": "0.1.0",
+  "author": {
+    "name": "dksh3",
+    "email": "dex34132@gmail.com"
+  },
+  "homepage": "https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia",
+  "repository": "https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia",
+  "license": "MIT",
+  "keywords": ["mcp", "sandbox", "agent", "envia"]
+}
