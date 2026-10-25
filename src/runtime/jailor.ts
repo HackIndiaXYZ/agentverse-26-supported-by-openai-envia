@@ -14,6 +14,23 @@ export class Jailor {
 
   async init(): Promise<void> {
     await this.stateStore.init();
+    await this.reconcile();
+  }
+
+  async reconcile(): Promise<void> {
+    const jails = await this.stateStore.readJails();
+    let changed = false;
+    const next = await Promise.all(jails.map(async (jail) => {
+      if (jail.state !== "running") return jail;
+      try {
+        const updated = await this.backend.inspectJail(jail);
+        if (updated.state !== jail.state || updated.pid !== jail.pid || updated.exitCode !== jail.exitCode) changed = true;
+        return updated;
+      } catch {
+        return jail;
+      }
+    }));
+    if (changed) await this.stateStore.writeJails(next);
   }
 
   capabilities() {
@@ -33,6 +50,7 @@ export class Jailor {
   }
 
   async listJails(): Promise<JailRecord[]> {
+    await this.reconcile();
     return this.stateStore.readJails();
   }
 
@@ -66,6 +84,35 @@ export class Jailor {
     await this.stateStore.writeJails(next);
     await this.journal("jail.stop", id, {}, "success");
     return updated;
+  }
+
+  async execJail(id: string, command: string, args: string[] = [], options?: { timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; durationMs: number; timedOut: boolean }> {
+    const jails = await this.stateStore.readJails();
+    const jail = jails.find((j) => j.id === id);
+    if (!jail) throw new Error(`jail not found: ${id}`);
+    if (jail.state !== "running") throw new Error(`jail is not running: ${id}`);
+    const result = await this.backend.execJail(jail, command, args, options);
+    await this.journal("jail.exec", id, { command, args, exitCode: result.exitCode, timedOut: result.timedOut }, result.exitCode === 0 ? "success" : "failure");
+    return result;
+  }
+
+  async restartJail(id: string): Promise<JailRecord> {
+    const jails = await this.stateStore.readJails();
+    const jail = jails.find((j) => j.id === id);
+    if (!jail) throw new Error(`jail not found: ${id}`);
+    if (jail.state === "running") {
+      const stopped = await this.backend.stopJail(jail);
+      const next = jails.map((j) => (j.id === id ? stopped : j));
+      await this.stateStore.writeJails(next);
+      await this.journal("jail.stop", id, {}, "success");
+    }
+    const refreshed = (await this.stateStore.readJails()).find((j) => j.id === id)!;
+    const started = await this.backend.startJail(refreshed);
+    const all = await this.stateStore.readJails();
+    const next = all.map((j) => (j.id === id ? started : j));
+    await this.stateStore.writeJails(next);
+    await this.journal("jail.start", id, { pid: started.pid }, "success");
+    return started;
   }
 
   async removeJail(id: string): Promise<void> {

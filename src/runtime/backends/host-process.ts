@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, rm, readFile } from "node:fs/promises";
+import { mkdir, rm, readFile, cp, symlink, stat, link } from "node:fs/promises";
 import { openSync, closeSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -20,6 +20,7 @@ export class HostProcessBackend implements RuntimeBackend {
   private baseDir: string;
   private allowUnsafe: boolean;
   private processes = new Map<string, number>();
+  private exitCodes = new Map<string, number | null>();
 
   constructor(options: HostProcessBackendOptions) {
     this.baseDir = options.baseDir;
@@ -50,6 +51,9 @@ export class HostProcessBackend implements RuntimeBackend {
     const rootDir = path.join(this.baseDir, "runtime", "jails", id);
     const logPath = path.join(rootDir, "jail.log");
     await mkdir(rootDir, { recursive: true });
+    if (spec.rootfsPath) {
+      await cp(spec.rootfsPath, rootDir, { recursive: true, force: true });
+    }
     const now = new Date().toISOString();
     return {
       id,
@@ -67,29 +71,34 @@ export class HostProcessBackend implements RuntimeBackend {
   }
 
   async startJail(jail: JailRecord): Promise<JailRecord> {
-    const cwd = jail.spec.workingDirectory
-      ? path.resolve(jail.rootDir, jail.spec.workingDirectory)
-      : jail.rootDir;
+    const wd = (jail.spec.workingDirectory ?? "").replace(/^\/+/, "");
+    const cwd = wd ? path.resolve(jail.rootDir, wd) : jail.rootDir;
     if (!cwd.startsWith(jail.rootDir)) {
       throw new Error("working directory escapes jail root");
     }
+    await this.applyMounts(jail);
     const logFd = openSync(jail.logPath, "a");
     const child = spawn(jail.spec.command, jail.spec.args ?? [], {
       cwd,
       env: { ...process.env, ...(jail.spec.env ?? {}) },
       shell: false,
-      detached: process.platform !== "win32",
+      detached: true,
       windowsHide: true,
       stdio: ["ignore", logFd, logFd],
     });
     if (child.pid) this.processes.set(jail.id, child.pid);
+    this.exitCodes.set(jail.id, null);
     child.on("exit", (code) => {
+      this.exitCodes.set(jail.id, code);
+      this.processes.delete(jail.id);
       jail.exitCode = code;
       jail.pid = null;
-      try { closeSync(logFd); } catch { /* ignore */ }
+      // Do not close logFd immediately; allow stdio buffers to flush.
     });
-    child.on("error", () => {
-      try { closeSync(logFd); } catch { /* ignore */ }
+    child.on("error", (err) => {
+      this.exitCodes.set(jail.id, null);
+      this.processes.delete(jail.id);
+      jail.pid = null;
     });
     const now = new Date().toISOString();
     return { ...jail, state: "running", startedAt: now, updatedAt: now, pid: child.pid ?? null };
@@ -99,7 +108,8 @@ export class HostProcessBackend implements RuntimeBackend {
     const pid = this.processes.get(jail.id) ?? jail.pid ?? undefined;
     if (pid && !isProcessAlive(pid)) {
       this.processes.delete(jail.id);
-      return { ...jail, state: "stopped", pid: null, updatedAt: new Date().toISOString() };
+      const exitCode = this.exitCodes.has(jail.id) ? this.exitCodes.get(jail.id) ?? null : jail.exitCode ?? null;
+      return { ...jail, state: "stopped", pid: null, exitCode, updatedAt: new Date().toISOString() };
     }
     return jail;
   }
@@ -132,7 +142,101 @@ export class HostProcessBackend implements RuntimeBackend {
 
   async removeJail(jail: JailRecord): Promise<void> {
     if (jail.state === "running") await this.stopJail(jail);
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        await rm(jail.rootDir, { recursive: true, force: true });
+        return;
+      } catch (err: any) {
+        if (err?.code !== "EBUSY" && err?.code !== "EPERM") throw err;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     await rm(jail.rootDir, { recursive: true, force: true });
+  }
+
+  async execJail(jail: JailRecord, command: string, args: string[] = [], options: { timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> } = {}): Promise<{ exitCode: number | null; signal: string | null; stdout: string; stderr: string; durationMs: number; timedOut: boolean }> {
+    const timeoutMs = Math.min(Math.max(options.timeoutMs ?? jail.spec.limits?.runtimeMs ?? 120000, 100), 300000);
+    const maxOutputBytes = options.maxOutputBytes ?? 1024 * 1024;
+    const cwd = jail.spec.workingDirectory
+      ? path.resolve(jail.rootDir, jail.spec.workingDirectory.replace(/^\/+/, ""))
+      : jail.rootDir;
+    const started = Date.now();
+    return new Promise((resolve) => {
+      const child = spawn(command, args, {
+        cwd,
+        env: { ...process.env, ...(jail.spec.env ?? {}), ...(options.env ?? {}) },
+        windowsHide: true,
+      });
+      let stdout = "";
+      let stderr = "";
+      let truncated = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill(); } catch { /* ignore */ }
+        try { killTree(child); } catch { /* ignore */ }
+      }, timeoutMs);
+      const append = (target: "stdout" | "stderr", chunk: Buffer) => {
+        const text = chunk.toString();
+        if (target === "stdout") {
+          if (stdout.length < maxOutputBytes) stdout += text;
+          else truncated = true;
+        } else {
+          if (stderr.length < maxOutputBytes) stderr += text;
+          else truncated = true;
+        }
+      };
+      child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
+      child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({
+          exitCode: null,
+          signal: null,
+          stdout,
+          stderr: `${stderr}\n${String(err)}`.trim(),
+          durationMs: Date.now() - started,
+          timedOut,
+        });
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        resolve({
+          exitCode: code,
+          signal: signal ?? null,
+          stdout: truncated ? `${stdout}\n[output truncated]` : stdout,
+          stderr: truncated ? `${stderr}\n[output truncated]` : stderr,
+          durationMs: Date.now() - started,
+          timedOut,
+        });
+      });
+    });
+  }
+
+  private async applyMounts(jail: JailRecord): Promise<void> {
+    for (const mount of jail.spec.mounts ?? []) {
+      const target = this.resolveMountTarget(jail.rootDir, mount.target);
+      await mkdir(path.dirname(target), { recursive: true });
+      try {
+        await rm(target, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+      const st = await stat(mount.source);
+      if (st.isDirectory()) {
+        const type = process.platform === "win32" ? "junction" : "dir";
+        await symlink(mount.source, target, type as any);
+      } else {
+        await link(mount.source, target);
+      }
+    }
+  }
+
+  private resolveMountTarget(rootDir: string, target: string): string {
+    const cleaned = target.replace(/^\/+/, "");
+    const resolved = path.resolve(rootDir, cleaned);
+    if (!resolved.startsWith(rootDir)) throw new Error("mount target escapes jail root");
+    return resolved;
   }
 
   async logs(jail: JailRecord, lines = 100): Promise<string[]> {
@@ -142,6 +246,18 @@ export class HostProcessBackend implements RuntimeBackend {
     } catch {
       return [];
     }
+  }
+}
+
+function killTree(child: ReturnType<typeof spawn>): void {
+  try {
+    if (process.platform === "win32") {
+      if (child.pid) spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    }
+  } catch {
+    try { child.kill("SIGKILL"); } catch { /* ignore */ }
   }
 }
 

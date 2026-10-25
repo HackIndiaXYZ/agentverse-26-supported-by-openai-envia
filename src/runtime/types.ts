@@ -35,6 +35,8 @@ export interface JailSpec {
   networkMode?: "none" | "host" | "bridge";
   isolationRequired?: boolean;
   allowUnsafeHostProcess?: boolean;
+  /** Optional image rootfs directory to copy into the jail root at creation time. */
+  rootfsPath?: string;
 }
 
 export type JailState = "created" | "running" | "stopped" | "failed" | "removed";
@@ -75,4 +77,12 @@ export interface RuntimeBackend {
   stopJail(jail: JailRecord, timeoutMs?: number): Promise<JailRecord>;
   removeJail(jail: JailRecord): Promise<void>;
   logs(jail: JailRecord, lines?: number): Promise<string[]>;
+  execJail(jail: JailRecord, command: string, args?: string[], options?: { timeoutMs?: number; maxOutputBytes?: number; env?: Record<string, string> }): Promise<{
+    exitCode: number | null;
+    signal: string | null;
+    stdout: string;
+    stderr: string;
+    durationMs: number;
+    timedOut: boolean;
+  }>;
 }

@@ -66,4 +66,21 @@ describe("Runtime foundation", () => {
     const journal = await jailor.readJournal();
     expect(journal.some((e) => e.operation === "jail.create")).toBe(true);
   });
+
+  it("executes commands in a running jail and restarts it", async () => {
+    const jail = await jailor.createJail({
+      name: "exec",
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 60000)"],
+      isolationRequired: false,
+    });
+    await jailor.startJail(jail.id);
+    const result = await jailor.execJail(jail.id, process.execPath, ["-e", "console.log('exec ok')"]);
+    expect(result.stdout).toContain("exec ok");
+    expect(result.exitCode).toBe(0);
+    const restarted = await jailor.restartJail(jail.id);
+    expect(restarted.state).toBe("running");
+    await jailor.stopJail(jail.id);
+    await jailor.removeJail(jail.id);
+  });
 });
