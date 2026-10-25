@@ -34,12 +34,13 @@ server.registerTool(
   "envia_sandbox_create",
   {
     title: "Create sandbox",
-    description: "Create a new hermetic sandbox environment for agent runs.",
+    description: "Create a new sandbox working directory with path and size controls.",
     inputSchema: {
-      name: z.string().min(1).describe("Human-readable sandbox name"),
-      network: z.boolean().optional().describe("Allow network access (default false)"),
-      maxRuntimeMs: z.number().int().positive().optional().describe("Per-run timeout in ms (default 30000)"),
-      allowedPaths: z.array(z.string()).optional().describe("Extra host paths allowed"),
+      name: z.string().min(1).max(128).describe("Human-readable sandbox name"),
+      network: z.boolean().optional().describe("Request network access. Enforced only by a real backend; default false uses best-effort env blocking."),
+      maxRuntimeMs: z.number().int().positive().max(300000).optional().describe("Per-run timeout in ms (default 30000)"),
+      maxOutputBytes: z.number().int().min(1024).max(10000000).optional().describe("Max captured stdout/stderr bytes (default 1000000)"),
+      maxFileBytes: z.number().int().min(1).max(50000000).optional().describe("Max bytes for a single file write (default 1000000)"),
     },
   },
   async (args) => {
@@ -47,7 +48,8 @@ server.registerTool(
       const sb = await manager.create(args.name, {
         network: args.network ?? false,
         maxRuntimeMs: args.maxRuntimeMs,
-        allowedPaths: args.allowedPaths,
+        maxOutputBytes: args.maxOutputBytes,
+        maxFileBytes: args.maxFileBytes,
       });
       return textResult({ sandbox: sb });
     } catch (e) {
@@ -77,7 +79,7 @@ server.registerTool(
   {
     title: "Get sandbox",
     description: "Get details of a sandbox by id.",
-    inputSchema: { id: z.string().min(1) },
+    inputSchema: { id: z.string().min(1).max(64) },
   },
   async (args) => {
     try {
@@ -93,7 +95,7 @@ server.registerTool(
   {
     title: "Destroy sandbox",
     description: "Destroy a sandbox and delete its files.",
-    inputSchema: { id: z.string().min(1) },
+    inputSchema: { id: z.string().min(1).max(64) },
   },
   async (args) => {
     try {
@@ -111,12 +113,12 @@ server.registerTool(
     title: "Run command in sandbox",
     description: "Run a command inside a sandbox and capture stdout/stderr/exit code.",
     inputSchema: {
-      id: z.string().min(1).describe("Sandbox id"),
-      command: z.string().min(1).describe("Executable to run"),
-      args: z.array(z.string()).optional().describe("Arguments"),
-      cwd: z.string().optional().describe("Working dir relative to sandbox root"),
-      timeoutMs: z.number().int().positive().optional(),
-      env: z.record(z.string(), z.string()).optional(),
+      id: z.string().min(1).max(64).describe("Sandbox id"),
+      command: z.string().min(1).max(4096).describe("Executable to run"),
+      args: z.array(z.string().max(4096)).max(128).optional().describe("Arguments"),
+      cwd: z.string().max(4096).optional().describe("Working dir relative to sandbox root"),
+      timeoutMs: z.number().int().positive().max(300000).optional(),
+      env: z.record(z.string().max(128), z.string().max(4096)).optional(),
     },
   },
   async (args) => {
@@ -141,9 +143,9 @@ server.registerTool(
     title: "Write file in sandbox",
     description: "Write a text file inside a sandbox.",
     inputSchema: {
-      id: z.string().min(1),
-      path: z.string().min(1).describe("Path relative to sandbox root"),
-      content: z.string(),
+      id: z.string().min(1).max(64),
+      path: z.string().min(1).max(4096).describe("Path relative to sandbox root"),
+      content: z.string().max(50000000),
     },
   },
   async (args) => {
@@ -162,8 +164,8 @@ server.registerTool(
     title: "Read file in sandbox",
     description: "Read a text file inside a sandbox.",
     inputSchema: {
-      id: z.string().min(1),
-      path: z.string().min(1),
+      id: z.string().min(1).max(64),
+      path: z.string().min(1).max(4096),
     },
   },
   async (args) => {
@@ -182,8 +184,8 @@ server.registerTool(
     title: "List files in sandbox",
     description: "List directory contents inside a sandbox.",
     inputSchema: {
-      id: z.string().min(1),
-      path: z.string().optional().describe("Relative dir, default '.'"),
+      id: z.string().min(1).max(64),
+      path: z.string().max(4096).optional().describe("Relative dir, default '.'"),
     },
   },
   async (args) => {
@@ -201,7 +203,7 @@ server.registerTool(
   {
     title: "Snapshot sandbox",
     description: "Create a tar.gz snapshot of a sandbox for later restore.",
-    inputSchema: { id: z.string().min(1) },
+    inputSchema: { id: z.string().min(1).max(64) },
   },
   async (args) => {
     try {
@@ -218,7 +220,7 @@ server.registerTool(
   {
     title: "List snapshots",
     description: "List snapshots for a sandbox.",
-    inputSchema: { id: z.string().min(1) },
+    inputSchema: { id: z.string().min(1).max(64) },
   },
   async (args) => {
     try {
@@ -236,8 +238,8 @@ server.registerTool(
     title: "Restore sandbox",
     description: "Restore a sandbox from a snapshot.",
     inputSchema: {
-      id: z.string().min(1),
-      snapshotId: z.string().min(1),
+      id: z.string().min(1).max(64),
+      snapshotId: z.string().min(1).max(64),
     },
   },
   async (args) => {

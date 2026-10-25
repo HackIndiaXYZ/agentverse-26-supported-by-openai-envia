@@ -2,10 +2,7 @@
   "mcpServers": {
     "envia": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"],
-      "env": {
-        "ENVIA_HOME": "${HOME}/.envia"
-      }
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"]
     }
   }
 }

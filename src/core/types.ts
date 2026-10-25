@@ -1,17 +1,25 @@
 export type SandboxId = string;
 export type SnapshotId = string;
 
+export type ExecutionMode = "disabled" | "trusted-host";
+
 export interface SandboxPolicy {
-  /** Whether the sandbox may reach the network. Advisory on platforms without OS-level isolation. */
+  /** Whether the sandbox may reach the network. Advisory only unless a real backend enforces it. */
   network: boolean;
-  /** Extra host paths the sandbox is allowed to read/write. Paths are validated, not enforced by OS. */
-  allowedPaths?: string[];
+  /** Extra host paths explicitly granted to the sandbox. Empty by default. */
+  allowedPaths: string[];
   /** Hard timeout for a single run in milliseconds. */
-  maxRuntimeMs?: number;
+  maxRuntimeMs: number;
   /** Maximum captured stdout/stderr bytes per run. */
-  maxOutputBytes?: number;
+  maxOutputBytes: number;
+  /** Maximum bytes for a single file write. */
+  maxFileBytes: number;
+  /** Maximum snapshot archive size in bytes. */
+  maxSnapshotBytes: number;
   /** Extra environment variables injected into runs. */
-  env?: Record<string, string>;
+  env: Record<string, string>;
+  /** Whether host command execution is permitted for this sandbox. */
+  allowHostCommands: boolean;
 }
 
 export interface Sandbox {
@@ -43,6 +51,7 @@ export interface RunResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  executionMode: ExecutionMode;
 }
 
 export interface Snapshot {
