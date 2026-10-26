@@ -83,4 +83,30 @@ describe("MCP server", () => {
     await client.close();
     await (await import("node:fs/promises")).rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   }, 60000);
+
+  it("exposes and validates v0.2.0 agent intelligence tools", async () => {
+    const transport = new StdioClientTransport({
+      command: "node",
+      args: [path.resolve("dist/mcp/server.js")],
+      env: { ...process.env, ENVIA_HOME: path.join(process.env.TEMP ?? "C:/tmp", `envia-mcp-intel-${Date.now()}`) },
+    });
+    const client = new Client({ name: "test", version: "0.0.1" });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const names = tools.tools.map((t) => t.name);
+    expect(names).toContain("envia_campaign_evaluate");
+    expect(names).toContain("envia_campaign_explain_failure");
+    expect(names).toContain("envia_campaign_recommend_next");
+    expect(names).toContain("envia_campaign_plan");
+    expect(names).toContain("envia_campaign_approve_plan");
+    expect(names.length).toBe(65);
+
+    const invalidPlan = await client.callTool({
+      name: "envia_campaign_plan",
+      arguments: { objective: "test", experiments: [] },
+    });
+    expect((invalidPlan as any).isError).toBe(true);
+
+    await client.close();
+  }, 30000);
 });
