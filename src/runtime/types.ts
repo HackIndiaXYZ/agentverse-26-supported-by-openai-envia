@@ -33,6 +33,8 @@ export interface JailSpec {
   mounts?: JailMount[];
   limits?: JailLimits;
   networkMode?: "none" | "host" | "bridge";
+  networks?: string[];
+  publishedPorts?: Array<{ hostPort: number | string; containerPort: number | string; protocol?: "tcp" | "udp" }>;
   isolationRequired?: boolean;
   networkRequired?: boolean;
   allowUnsafeHostProcess?: boolean;

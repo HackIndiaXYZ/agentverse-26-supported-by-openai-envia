@@ -67,6 +67,13 @@ function resolveJailhouseConfigPath(rest: string[]): string {
   return path.resolve(process.cwd(), "jailhouse.json");
 }
 
+function parsePublish(entry: string): { hostPort: number | string; containerPort: number | string; protocol?: "tcp" | "udp" } {
+  const [left, right] = entry.split(":");
+  const proto = right?.includes("/") ? right.split("/")[1] : "tcp";
+  const target = right?.split("/")[0] ?? left;
+  return { hostPort: left, containerPort: target, protocol: proto as "tcp" | "udp" };
+}
+
 function getAllOptions(args: string[], name: string): string[] {
   const values: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -152,6 +159,8 @@ async function main(): Promise<number> {
       ),
       workingDirectory: getOption(rest, "--workdir"),
       mounts,
+      networks: getAllOptions(rest, "--attach-network"),
+      publishedPorts: getAllOptions(rest, "--publish").map(parsePublish),
       networkMode: getOption(rest, "--network") as any,
       networkRequired: hasFlag(rest, "--require-network-isolation"),
       isolationRequired,
@@ -524,6 +533,8 @@ async function main(): Promise<number> {
       env,
       workingDirectory: getOption(rest, "--workdir") ?? imageManifest?.config?.workingDir,
       mounts,
+      networks: getAllOptions(rest, "--attach-network"),
+      publishedPorts: getAllOptions(rest, "--publish").map(parsePublish),
       networkMode: getOption(rest, "--network") as any,
       networkRequired: hasFlag(rest, "--require-network-isolation"),
       limits: {},

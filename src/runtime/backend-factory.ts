@@ -1,5 +1,6 @@
 import { HostProcessBackend } from "./backends/host-process.js";
 import { LinuxNamespaceBackend } from "./backends/linux-namespace.js";
+import { NetworkManager } from "../network/manager.js";
 
 export type BackendName = "host-process" | "linux-namespace";
 
@@ -16,8 +17,12 @@ export function createBackend(options: BackendFactoryOptions) {
     ?? (process.platform === "linux" ? "linux-namespace" : "host-process");
 
   switch (requested) {
-    case "linux-namespace":
-      return new LinuxNamespaceBackend({ baseDir: options.baseDir, allowUnsafe: options.allowUnsafeLinux ?? false });
+    case "linux-namespace": {
+      const networkManager = new NetworkManager(options.baseDir);
+      // Best-effort init; backend may be used in tests without init.
+      void networkManager.init().catch(() => undefined);
+      return new LinuxNamespaceBackend({ baseDir: options.baseDir, allowUnsafe: options.allowUnsafeLinux ?? false, networkManager });
+    }
     case "host-process":
     default:
       return new HostProcessBackend({ baseDir: options.baseDir, allowUnsafeHostProcess: options.allowUnsafeHostProcess ?? false });

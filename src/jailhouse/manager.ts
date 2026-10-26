@@ -250,7 +250,9 @@ export class JailhouseManager {
           env,
           workingDirectory: service.working_dir ?? image.manifest.config.workingDir,
           mounts,
-          networkMode: service.networks?.includes("none") ? "none" : "host",
+          networks: (service.networks ?? []).filter((n) => n !== "none"),
+          publishedPorts: this.parsePorts(service).map((p) => ({ hostPort: p.published, containerPort: p.target, protocol: p.protocol })),
+          networkMode: service.networks?.includes("none") ? "none" : (service.networks?.length ? "bridge" : "host"),
           limits: {
             cpuMillis: service.cpu ? Math.floor(service.cpu * 1000) : undefined,
             memoryBytes: this.parseMemory(service.memory),

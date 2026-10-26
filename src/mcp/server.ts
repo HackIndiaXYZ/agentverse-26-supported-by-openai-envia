@@ -4,10 +4,32 @@ import { z } from "zod";
 import os from "node:os";
 import path from "node:path";
 import { SandboxManager } from "../core/sandbox.js";
+import { createBackend } from "../runtime/backend-factory.js";
+import { Jailor } from "../runtime/jailor.js";
+import { ImageStore } from "../images/store.js";
+import { VolumeManager } from "../volumes/manager.js";
+import { NetworkManager } from "../network/manager.js";
+import { AgentRunManager } from "../agent/run-manager.js";
+import { JailhouseManager } from "../jailhouse/manager.js";
 
 const baseDir = process.env.ENVIA_HOME ?? path.join(os.homedir(), ".envia");
-const manager = new SandboxManager({ baseDir });
+const allowUnsafe = process.env.ENVIA_ALLOW_HOST_COMMANDS === "1" || process.env.ENVIA_ALLOW_HOST_PROCESS_BACKEND === "1";
+const manager = new SandboxManager({ baseDir, allowHostCommands: allowUnsafe });
 await manager.init();
+
+const backend = createBackend({ baseDir, allowUnsafeHostProcess: allowUnsafe, allowUnsafeLinux: allowUnsafe });
+const jailor = new Jailor(baseDir, backend);
+await jailor.init();
+const imageStore = new ImageStore(baseDir);
+await imageStore.init();
+const volumeManager = new VolumeManager(baseDir);
+await volumeManager.init();
+const networkManager = new NetworkManager(baseDir);
+await networkManager.init();
+const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUnsafe);
+await agentRunManager.init();
+const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
+await jailhouseManager.init();
 
 const server = new McpServer(
   { name: "envia", version: "0.1.0" },
@@ -266,6 +288,138 @@ server.registerTool(
     } catch (e) {
       return errorResult(e);
     }
+  }
+);
+
+// --- jail tools ---
+
+server.registerTool(
+  "envia_jail_list",
+  { title: "List jails", description: "List jails tracked by the Jailor.", inputSchema: {} },
+  async () => {
+    try { return textResult({ jails: await jailor.listJails() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_jail_create",
+  {
+    title: "Create jail",
+    description: "Create a jail from an optional image root or command.",
+    inputSchema: {
+      name: z.string().min(1).max(128),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      image: z.string().optional(),
+      networkMode: z.enum(["none", "host", "bridge"]).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      let rootfsPath: string | undefined;
+      if (args.image) rootfsPath = (await imageStore.resolve(args.image)).rootfsPath;
+      const jail = await jailor.createJail({
+        name: args.name,
+        command: args.command,
+        args: args.args,
+        networkMode: args.networkMode,
+        isolationRequired: false,
+        allowUnsafeHostProcess: allowUnsafe,
+        rootfsPath,
+      });
+      return textResult({ jail });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_jail_start",
+  { title: "Start jail", description: "Start a jail.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ jail: await jailor.startJail(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_jail_stop",
+  { title: "Stop jail", description: "Stop a jail.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ jail: await jailor.stopJail(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_jail_remove",
+  { title: "Remove jail", description: "Remove a jail.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { await jailor.removeJail(args.id); return textResult({ removed: args.id }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_jail_exec",
+  {
+    title: "Exec in jail",
+    description: "Execute a command in a running jail.",
+    inputSchema: { id: z.string().min(1), command: z.string().min(1), args: z.array(z.string()).optional(), timeoutMs: z.number().int().positive().optional() },
+  },
+  async (args) => {
+    try {
+      const result = await jailor.execJail(args.id, args.command, args.args ?? [], { timeoutMs: args.timeoutMs });
+      return textResult({ result });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_image_list",
+  { title: "List images", description: "List stored images.", inputSchema: {} },
+  async () => {
+    try { return textResult({ images: await imageStore.list() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_volume_list",
+  { title: "List volumes", description: "List volumes.", inputSchema: {} },
+  async () => {
+    try { return textResult({ volumes: await volumeManager.list() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_network_list",
+  { title: "List networks", description: "List networks.", inputSchema: {} },
+  async () => {
+    try { return textResult({ networks: await networkManager.list() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_agent_run",
+  {
+    title: "Run agent task",
+    description: "Create and run an Agent Run in a jail.",
+    inputSchema: {
+      task: z.string().min(1),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+      image: z.string().optional(),
+      timeoutMs: z.number().int().positive().optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const record = await agentRunManager.run({
+        task: args.task,
+        command: args.command,
+        args: args.args ?? [],
+        image: args.image,
+        env: {},
+        timeoutMs: args.timeoutMs,
+      });
+      return textResult({ run: record });
+    } catch (e) { return errorResult(e); }
   }
 );
 
