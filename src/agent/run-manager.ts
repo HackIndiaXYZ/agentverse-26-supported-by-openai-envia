@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { Jailor } from "../runtime/jailor.js";
 import { ImageStore } from "../images/store.js";
 import { ExecutionLedger } from "../ledger/ledger.js";
+import { SecretRedactor, RedactionConfigManager } from "../security/redactor.js";
 import type { AgentRunRecord, AgentRunSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +18,7 @@ export class AgentRunManager {
   private jailor: Jailor;
   private imageStore: ImageStore;
   private allowUnsafe: boolean;
+  private redactor: SecretRedactor;
 
   constructor(baseDir: string, jailor: Jailor, imageStore: ImageStore, allowUnsafe: boolean) {
     this.baseDir = baseDir;
@@ -24,10 +26,13 @@ export class AgentRunManager {
     this.jailor = jailor;
     this.imageStore = imageStore;
     this.allowUnsafe = allowUnsafe;
+    this.redactor = new SecretRedactor();
   }
 
   async init(): Promise<void> {
     await mkdir(this.runsDir, { recursive: true });
+    const config = await new RedactionConfigManager(this.baseDir).load();
+    this.redactor = new SecretRedactor(config);
   }
 
   async run(spec: AgentRunSpec): Promise<AgentRunRecord> {
@@ -44,7 +49,7 @@ export class AgentRunManager {
       status: "running",
       createdAt: new Date().toISOString(),
       jailId: "",
-      spec,
+      spec: this.redactor.redactObject(spec) as AgentRunSpec,
       exitCode: null,
       stdout: "",
       stderr: "",
@@ -114,8 +119,10 @@ export class AgentRunManager {
     const status = exitCode === 0 ? "succeeded" : "failed";
 
     record.exitCode = exitCode;
-    record.stdout = stdout.slice(0, 100000);
-    record.stderr = stderr;
+    const redactedStdout = this.redactor.redactText(stdout);
+    const redactedStderr = this.redactor.redactText(stderr);
+    record.stdout = redactedStdout.slice(0, 100000);
+    record.stderr = redactedStderr;
     record.stdoutHash = sha256(record.stdout);
     record.stderrHash = sha256(record.stderr);
     record.fileManifestHash = await this.computeFileManifest(path.join(this.baseDir, "runtime", "jails", jail.id));

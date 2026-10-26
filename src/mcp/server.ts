@@ -11,7 +11,10 @@ import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
 import { ExperimentManager } from "../experiments/manager.js";
+import { FaultManager } from "../faults/manager.js";
+import { RetentionManager } from "../retention/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
+import { SecretRedactor } from "../security/redactor.js";
 
 const baseDir = process.env.ENVIA_HOME ?? path.join(os.homedir(), ".envia");
 const allowUnsafe = process.env.ENVIA_ALLOW_HOST_COMMANDS === "1" || process.env.ENVIA_ALLOW_HOST_PROCESS_BACKEND === "1";
@@ -31,6 +34,9 @@ const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUn
 await agentRunManager.init();
 const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
 await experimentManager.init();
+const faultManager = new FaultManager(baseDir, jailor);
+const retentionManager = new RetentionManager(baseDir);
+await retentionManager.init();
 const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
 await jailhouseManager.init();
 
@@ -46,9 +52,10 @@ function textResult(obj: unknown) {
 }
 
 function errorResult(err: unknown) {
+  const redactor = new SecretRedactor();
   const msg = err instanceof Error ? err.message : String(err);
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ error: msg }, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify({ error: redactor.redactText(msg) }, null, 2) }],
     isError: true,
   };
 }
@@ -531,6 +538,114 @@ server.registerTool(
   { title: "Prepare change set", description: "Prepare a reviewable change set from a checkpoint.", inputSchema: { id: z.string().min(1), checkpointId: z.string().optional() } },
   async (args) => {
     try { return textResult({ changeSet: await experimentManager.prepareChangeSet(args.id, args.checkpointId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- redaction tools ---
+server.registerTool(
+  "envia_redaction_policy",
+  { title: "Redaction policy", description: "Inspect the active redaction configuration.", inputSchema: {} },
+  async () => {
+    try {
+      const config = await new (await import("../security/redactor.js")).RedactionConfigManager(baseDir).load();
+      return textResult({ policy: config });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- retention tools ---
+server.registerTool(
+  "envia_retention_preview",
+  { title: "Retention preview", description: "Preview disposable data eligible for cleanup.", inputSchema: {} },
+  async () => {
+    try { return textResult({ preview: await retentionManager.preview() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_retention_cleanup",
+  { title: "Retention cleanup", description: "Clean up expired disposable data. Use dryRun to preview.", inputSchema: { dryRun: z.boolean().optional() } },
+  async (args) => {
+    try { return textResult({ result: await retentionManager.cleanup(args.dryRun ?? false) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_retention_disk_usage",
+  { title: "Retention disk usage", description: "Report Envia-managed disk usage.", inputSchema: {} },
+  async () => {
+    try { return textResult({ usage: await retentionManager.diskUsage() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- fault tools ---
+server.registerTool(
+  "envia_fault_types",
+  { title: "Fault types", description: "List supported fault types and requirements.", inputSchema: {} },
+  async () => {
+    try { return textResult({ faults: faultManager.capabilities() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_fault_apply",
+  { title: "Apply fault", description: "Apply a bounded fault to a jail.", inputSchema: { experimentId: z.string().min(1), jailId: z.string().min(1), type: z.string().min(1), params: z.record(z.string(), z.unknown()).optional() } },
+  async (args) => {
+    try {
+      const record = await faultManager.applyFault(args.experimentId, args.jailId, args.type as any, (args.params ?? {}) as Record<string, unknown>);
+      return textResult({ fault: record });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_fault_history",
+  { title: "Fault history", description: "Read fault history for an experiment.", inputSchema: { experimentId: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ faults: await faultManager.readFaults(args.experimentId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- experiment intelligence tools ---
+server.registerTool(
+  "envia_experiment_update",
+  {
+    title: "Update experiment investigation",
+    description: "Record hypothesis, objective, method, expected/observed outcomes, conclusion, confidence, evidence, and next steps.",
+    inputSchema: {
+      id: z.string().min(1),
+      hypothesis: z.string().optional(),
+      objective: z.string().optional(),
+      method: z.string().optional(),
+      expectedOutcome: z.string().optional(),
+      observedOutcome: z.string().optional(),
+      conclusion: z.string().optional(),
+      confidence: z.number().min(0).max(1).optional(),
+      evidenceRefs: z.array(z.string()).optional(),
+      nextSteps: z.array(z.string()).optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const { id, ...fields } = args;
+      return textResult({ experiment: await experimentManager.updateInvestigation(id, fields) });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_compare",
+  { title: "Compare experiments", description: "Compare two experiments and produce a structured report.", inputSchema: { leftId: z.string().min(1), rightId: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ comparison: await experimentManager.compareExperiments(args.leftId, args.rightId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_export_patch",
+  { title: "Export candidate patch", description: "Export a reviewable patch for a candidate change set.", inputSchema: { id: z.string().min(1), checkpointId: z.string().optional() } },
+  async (args) => {
+    try { return textResult({ patch: await experimentManager.exportPatch(args.id, args.checkpointId) }); } catch (e) { return errorResult(e); }
   }
 );
 

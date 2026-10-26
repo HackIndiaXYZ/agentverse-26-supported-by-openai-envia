@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { Jailor } from "../runtime/jailor.js";
 import { ImageStore } from "../images/store.js";
 import { ExecutionLedger } from "../ledger/ledger.js";
+import { SecretRedactor, RedactionConfigManager } from "../security/redactor.js";
 import { createTarSnapshot, extractTarSnapshot, computeFileManifest, clearDirectory, copyDirectoryContents } from "../storage/snapshot.js";
 import type { Checkpoint, ExperimentCommandResult, ExperimentConfig, ExperimentRecord, ExperimentStatus } from "./types.js";
 
@@ -13,16 +14,20 @@ export class ExperimentManager {
   private experimentsDir: string;
   private jailor: Jailor;
   private imageStore: ImageStore;
+  private redactor: SecretRedactor;
 
   constructor(baseDir: string, jailor: Jailor, imageStore: ImageStore) {
     this.baseDir = baseDir;
     this.experimentsDir = path.join(baseDir, "experiments");
     this.jailor = jailor;
     this.imageStore = imageStore;
+    this.redactor = new SecretRedactor();
   }
 
   async init(): Promise<void> {
     await mkdir(this.experimentsDir, { recursive: true });
+    const config = await new RedactionConfigManager(this.baseDir).load();
+    this.redactor = new SecretRedactor(config);
   }
 
   private experimentDir(id: string): string {
@@ -91,7 +96,7 @@ export class ExperimentManager {
       sourceManifest,
       jailId: jail.id,
       rootDir: jail.rootDir,
-      config,
+      config: this.redactor.redactObject(config) as ExperimentConfig,
       checkpoints: [],
       commands: [],
       ledgerPath,
@@ -211,30 +216,32 @@ export class ExperimentManager {
       env: options.env,
     });
     const finishedAt = new Date().toISOString();
-    await writeFile(stdoutPath, result.stdout);
-    await writeFile(stderrPath, result.stderr);
+    const redactedStdout = this.redactor.redactText(result.stdout);
+    const redactedStderr = this.redactor.redactText(result.stderr);
+    await writeFile(stdoutPath, redactedStdout);
+    await writeFile(stderrPath, redactedStderr);
 
     const commandResult: ExperimentCommandResult = {
       id: runId,
-      command,
-      args,
+      command: this.redactor.redactText(command),
+      args: this.redactor.redactArgs(args),
       startedAt,
       finishedAt,
       exitCode: result.exitCode,
       timedOut: result.timedOut,
       stdoutPath,
       stderrPath,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      stdoutHash: sha256(result.stdout),
-      stderrHash: sha256(result.stderr),
+      stdout: redactedStdout,
+      stderr: redactedStderr,
+      stdoutHash: sha256(redactedStdout),
+      stderrHash: sha256(redactedStderr),
     };
     record.commands.push(commandResult);
     await this.writeRecord(record);
     await this.ledger(record).append("command.executed", {
       runId,
-      command,
-      args,
+      command: this.redactor.redactText(command),
+      args: this.redactor.redactArgs(args),
       exitCode: result.exitCode,
       timedOut: result.timedOut,
       durationMs: result.durationMs,
@@ -258,6 +265,65 @@ export class ExperimentManager {
     await this.writeRecord(record);
     await this.ledger(record).append("experiment.completed", { summary });
     return record;
+  }
+
+  async updateInvestigation(experimentId: string, fields: Partial<Pick<ExperimentRecord, "hypothesis" | "objective" | "method" | "expectedOutcome" | "observedOutcome" | "conclusion" | "confidence" | "evidenceRefs" | "nextSteps">>): Promise<ExperimentRecord> {
+    const record = await this.readRecord(experimentId);
+    if (fields.hypothesis !== undefined) record.hypothesis = fields.hypothesis;
+    if (fields.objective !== undefined) record.objective = fields.objective;
+    if (fields.method !== undefined) record.method = fields.method;
+    if (fields.expectedOutcome !== undefined) record.expectedOutcome = fields.expectedOutcome;
+    if (fields.observedOutcome !== undefined) record.observedOutcome = fields.observedOutcome;
+    if (fields.conclusion !== undefined) record.conclusion = fields.conclusion;
+    if (fields.confidence !== undefined) record.confidence = fields.confidence;
+    if (fields.evidenceRefs !== undefined) record.evidenceRefs = fields.evidenceRefs;
+    if (fields.nextSteps !== undefined) record.nextSteps = fields.nextSteps;
+    await this.writeRecord(record);
+    await this.ledger(record).append("investigation.updated", { fields: Object.keys(fields) });
+    return record;
+  }
+
+  async compareExperiments(leftId: string, rightId: string): Promise<Record<string, unknown>> {
+    const left = await this.readRecord(leftId);
+    const right = await this.readRecord(rightId);
+    const leftCp = left.checkpoints.length ? await this.readCheckpoint(leftId, left.checkpoints[left.checkpoints.length - 1]) : undefined;
+    const rightCp = right.checkpoints.length ? await this.readCheckpoint(rightId, right.checkpoints[right.checkpoints.length - 1]) : undefined;
+
+    const leftFiles = leftCp?.fileManifest ?? left.sourceManifest;
+    const rightFiles = rightCp?.fileManifest ?? right.sourceManifest;
+    const leftSet = new Set(Object.keys(leftFiles));
+    const rightSet = new Set(Object.keys(rightFiles));
+    const added = [...rightSet].filter((f) => !leftSet.has(f));
+    const removed = [...leftSet].filter((f) => !rightSet.has(f));
+    const modified = [...leftSet].filter((f) => rightSet.has(f) && leftFiles[f] !== rightFiles[f]);
+
+    const lastLeft = left.commands[left.commands.length - 1];
+    const lastRight = right.commands[right.commands.length - 1];
+
+    return {
+      left: leftId,
+      right: rightId,
+      status: { left: left.status, right: right.status },
+      exitCodes: { left: lastLeft?.exitCode ?? null, right: lastRight?.exitCode ?? null },
+      outputHashes: { left: lastLeft?.stdoutHash, right: lastRight?.stdoutHash },
+      fileDiff: { added, removed, modified },
+      faults: {
+        left: (await this.readFaults(leftId)).length,
+        right: (await this.readFaults(rightId)).length,
+      },
+      comparable: true,
+      notes: "Comparison is based on recorded manifests and command results; external and nondeterministic inputs may make results non-comparable.",
+    };
+  }
+
+  private async readFaults(experimentId: string): Promise<unknown[]> {
+    try {
+      const raw = await readFile(path.join(this.experimentDir(experimentId), "faults.json"), "utf8");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   }
 
   async dispose(experimentId: string): Promise<void> {
@@ -339,15 +405,67 @@ export class ExperimentManager {
     const record = await this.readRecord(experimentId);
     const checkpoint = checkpointId ? await this.readCheckpoint(experimentId, checkpointId) : (record.checkpoints.length ? await this.readCheckpoint(experimentId, record.checkpoints[record.checkpoints.length - 1]) : undefined);
     if (!checkpoint) throw new Error("no checkpoint available");
-    const currentManifest = record.commands.length ? await computeFileManifest(record.rootDir!) : checkpoint.fileManifest;
-    const changed = Object.keys(currentManifest).filter((f) => checkpoint.fileManifest[f] !== currentManifest[f]);
-    return {
+    if (!record.rootDir) throw new Error("experiment has no root directory");
+
+    // Verify the original project has not changed since the experiment began.
+    const currentSourceManifest = await computeFileManifest(record.sourceProject);
+    const sourceChanged = Object.keys(currentSourceManifest).some((f) => record.sourceManifest[f] !== currentSourceManifest[f]) ||
+      Object.keys(record.sourceManifest).some((f) => currentSourceManifest[f] !== record.sourceManifest[f]);
+    const currentManifest = await computeFileManifest(record.rootDir);
+    const changedFiles = Object.keys(currentManifest).filter((f) => checkpoint.fileManifest[f] !== currentManifest[f] || !(f in checkpoint.fileManifest));
+    const removedFiles = Object.keys(checkpoint.fileManifest).filter((f) => !(f in currentManifest));
+    const allChanged = [...new Set([...changedFiles, ...removedFiles])].filter((f) => !this.isInternalPath(f));
+
+    const verificationHash = crypto.createHash("sha256").update(JSON.stringify({ checkpoint: checkpoint.id, files: allChanged, manifest: currentManifest })).digest("hex");
+    const changeSet = {
       experimentId,
       checkpointId: checkpoint.id,
-      changedFiles: changed,
+      changedFiles: allChanged,
+      removedFiles,
+      sourceProjectChanged: sourceChanged,
+      verificationHash,
+      verifiedAt: new Date().toISOString(),
       requiresApproval: true,
-      message: "Review the changed files before promoting them to the original project.",
+      promotionAllowed: !sourceChanged,
+      message: sourceChanged
+        ? "The original project changed since the experiment began. Resolve conflicts before promotion."
+        : "Review the changed files before promoting them to the original project.",
     };
+    await writeFile(path.join(this.experimentDir(experimentId), "change-set.json"), JSON.stringify(changeSet, null, 2));
+    await this.ledger(record).append("change_set.prepared", { checkpointId: checkpoint.id, changedFiles: allChanged.length, sourceProjectChanged: sourceChanged });
+    return changeSet;
+  }
+
+  async exportPatch(experimentId: string, checkpointId?: string): Promise<{ path: string; content: string }> {
+    const changeSet = await this.prepareChangeSet(experimentId, checkpointId) as { checkpointId: string };
+    const record = await this.readRecord(experimentId);
+    if (!record.rootDir) throw new Error("experiment has no root directory");
+
+    // Reconstruct the baseline from the checkpoint into a temp directory.
+    const checkpointPath = path.join(this.experimentDir(experimentId), "checkpoints", `${changeSet.checkpointId}.tar.gz`);
+    const baselineDir = path.join(this.experimentsDir, `.baseline-${crypto.randomUUID()}`);
+    await (await import("../storage/snapshot.js")).extractTarSnapshot(checkpointPath, baselineDir);
+
+    const patchPath = path.join(this.experimentDir(experimentId), "candidate.patch");
+    let content = "";
+    try {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", baselineDir, record.rootDir], { timeout: 120000 });
+      content = stdout;
+    } catch (err: any) {
+      // git diff returns exit code 1 when differences exist.
+      if (typeof err?.stdout === "string" && err.stdout.length > 0) content = err.stdout;
+      else content = `Unable to generate a unified diff: ${String(err)}`;
+    }
+    await writeFile(patchPath, content);
+    await rm(baselineDir, { recursive: true, force: true }).catch(() => undefined);
+    return { path: patchPath, content };
+  }
+
+  private isInternalPath(filePath: string): boolean {
+    return filePath.startsWith(".envia/") || filePath === "ledger.jsonl" || filePath.endsWith(".tmp");
   }
 }
 

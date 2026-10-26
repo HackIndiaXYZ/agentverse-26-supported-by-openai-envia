@@ -60,6 +60,15 @@ export interface ExperimentRecord {
   checkpoints: string[];
   commands: ExperimentCommandResult[];
   resultSummary?: string;
+  hypothesis?: string;
+  objective?: string;
+  method?: string;
+  expectedOutcome?: string;
+  observedOutcome?: string;
+  conclusion?: string;
+  confidence?: number;
+  evidenceRefs?: string[];
+  nextSteps?: string[];
   ledgerPath: string;
   reportPath: string;
 }

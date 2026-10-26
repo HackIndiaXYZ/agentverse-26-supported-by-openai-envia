@@ -6,6 +6,8 @@ import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
 import { ExperimentManager } from "../experiments/manager.js";
+import { FaultManager } from "../faults/manager.js";
+import { RetentionManager } from "../retention/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
 import os from "node:os";
 import path from "node:path";
@@ -110,6 +112,9 @@ async function main(): Promise<number> {
   await agentRunManager.init();
   const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
   await experimentManager.init();
+  const faultManager = new FaultManager(baseDir, jailor);
+  const retentionManager = new RetentionManager(baseDir);
+  await retentionManager.init();
   const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
   await jailhouseManager.init();
 

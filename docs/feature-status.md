@@ -18,3 +18,7 @@
 | Jailhouse orchestration | Planned |
 | Registry | Planned |
 | Agent Runs on jails | Implemented and tested (ledger, checkpoint, change gate, replay) |
+| Secret redaction | Implemented and tested (configurable patterns and sensitive names) |
+| Retention controls | Implemented and tested (preview, cleanup, disk usage) |
+| Fault injection | Implemented (bounded best-effort and unsupported modes reported honestly) |
+| Experiment intelligence | Implemented (hypothesis, evidence, conclusions, comparison, change verification) |

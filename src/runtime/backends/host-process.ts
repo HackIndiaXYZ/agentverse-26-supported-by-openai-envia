@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm, readFile, cp, symlink, stat, link } from "node:fs/promises";
-import { openSync, closeSync } from "node:fs";
+import { createWriteStream } from "node:fs";
+import { SecretRedactor } from "../../security/redactor.js";
 import path from "node:path";
 import crypto from "node:crypto";
 import type {
@@ -77,26 +78,45 @@ export class HostProcessBackend implements RuntimeBackend {
       throw new Error("working directory escapes jail root");
     }
     await this.applyMounts(jail);
-    const logFd = openSync(jail.logPath, "a");
+    const redactor = new SecretRedactor();
+    const logStream = createWriteStream(jail.logPath, { flags: "a" });
+    let pending = "";
+    const flushRedacted = (text: string, final = false) => {
+      pending += text;
+      if (final || pending.length > 512) {
+        const keep = final ? 0 : 256;
+        const toRedact = pending.slice(0, pending.length - keep);
+        pending = pending.slice(pending.length - keep);
+        if (toRedact) logStream.write(redactor.redactText(toRedact));
+        if (final && pending) {
+          logStream.write(redactor.redactText(pending));
+          pending = "";
+        }
+      }
+    };
     const child = spawn(jail.spec.command, jail.spec.args ?? [], {
       cwd,
       env: { ...process.env, ...(jail.spec.env ?? {}) },
       shell: false,
       detached: true,
       windowsHide: true,
-      stdio: ["ignore", logFd, logFd],
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    child.stdout?.on("data", (chunk) => flushRedacted(chunk.toString()));
+    child.stderr?.on("data", (chunk) => flushRedacted(chunk.toString()));
     if (child.pid) this.processes.set(jail.id, child.pid);
     this.exitCodes.set(jail.id, null);
     child.on("exit", (code) => {
+      flushRedacted("", true);
+      logStream.end();
       this.exitCodes.set(jail.id, code);
       this.processes.delete(jail.id);
       jail.exitCode = code;
       jail.pid = null;
-      // Do not close logFd immediately; allow stdio buffers to flush.
     });
-    child.on("error", (err) => {
-      this.exitCodes.set(jail.id, null);
+    child.on("error", () => {
+      flushRedacted("", true);
+      logStream.end();
       this.processes.delete(jail.id);
       jail.pid = null;
     });
