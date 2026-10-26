@@ -81,3 +81,12 @@ export interface CampaignRecord {
   evaluationConfig?: EvaluationConfig;
   evaluations?: EvaluationReport[];
 }
+
+export interface CampaignRecommendation {
+  type: string;
+  priority: number;
+  reason: string;
+  evidence: string[];
+  suggestedTool?: string;
+  requiresApproval?: boolean;
+}

@@ -11,7 +11,7 @@ import { safeRelativePath, isPathInside, resolveInside } from "../security/paths
 import { SecretRedactor } from "../security/redactor.js";
 import { LockManager } from "../coordination/lock-manager.js";
 import { TransactionManager } from "../transactions/manager.js";
-import type { CampaignComparison, CampaignExperiment, CampaignExperimentDefinition, CampaignRecord, CampaignStatus } from "./types.js";
+import type { CampaignComparison, CampaignExperiment, CampaignExperimentDefinition, CampaignRecord, CampaignStatus, CampaignRecommendation } from "./types.js";
 
 const VALID_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   planned: ["ready", "running", "cancelled", "failed", "interrupted"],
@@ -432,6 +432,77 @@ export class CampaignManager {
       record.evaluations = [...(record.evaluations ?? []), report];
       await this.write(record);
       return report;
+    });
+  }
+
+  async recommendNext(id: string): Promise<{ campaignId: string; recommendations: CampaignRecommendation[]; summary: string }> {
+    return this.withLock(id, async () => {
+      const record = await this.read(id);
+      const recommendations: CampaignRecommendation[] = [];
+      const push = (recommendation: CampaignRecommendation) => recommendations.push(recommendation);
+
+      if (record.status === "cancelled") {
+        push({ type: "stop", priority: 1, reason: "The campaign is cancelled.", evidence: [`status=${record.status}`], suggestedTool: "envia_campaign_status" });
+      }
+      if (record.status === "failed") {
+        push({ type: "investigate-failure", priority: 1, reason: "The campaign failed and needs diagnosis.", evidence: [record.failure ?? "failure recorded"], suggestedTool: "envia_campaign_explain_failure" });
+      }
+      if (record.status === "interrupted") {
+        push({ type: "recover", priority: 1, reason: "The campaign was interrupted.", evidence: [`status=${record.status}`], suggestedTool: "envia_campaign_status" });
+      }
+
+      const failedExperiments = record.experiments.filter((experiment) => experiment.status === "failed");
+      for (const experiment of failedExperiments) {
+        push({ type: "investigate-failure", priority: 2, reason: `Experiment ${experiment.name} failed.`, evidence: [`experimentId=${experiment.experimentId ?? "unknown"}`], suggestedTool: "envia_campaign_explain_failure" });
+      }
+
+      if (record.experiments.length === 0) {
+        push({ type: "plan-experiments", priority: 2, reason: "No experiments have been defined.", evidence: ["campaign has zero experiments"], suggestedTool: "envia_campaign_create" });
+      }
+
+      const completedExperiments = record.experiments.filter((experiment) => experiment.status === "completed" || experiment.status === "evaluating");
+      if (completedExperiments.length > 0 && !record.candidate) {
+        push({ type: "compare-candidates", priority: 3, reason: "Completed experiments have not been compared or selected.", evidence: [`completed=${completedExperiments.length}`], suggestedTool: "envia_campaign_compare" });
+      }
+
+      if (record.candidate && !record.candidate.verificationHash) {
+        push({ type: "verify-candidate", priority: 3, reason: "The selected candidate has not been verified.", evidence: [`experimentId=${record.candidate.experimentId}`], suggestedTool: "envia_campaign_verify_candidate" });
+      }
+
+      if (record.candidate?.verificationHash && record.candidate.approved !== true) {
+        push({ type: "request-approval", priority: 4, reason: "The verified candidate awaits explicit approval.", evidence: [`experimentId=${record.candidate.experimentId}`], suggestedTool: "envia_campaign_approve", requiresApproval: true });
+      }
+
+      if (record.candidate?.approved === true && !record.candidate.promoted) {
+        push({ type: "apply-candidate", priority: 5, reason: "The approved candidate has not been applied.", evidence: [`experimentId=${record.candidate.experimentId}`], suggestedTool: "envia_campaign_apply" });
+      }
+
+      if (record.candidate?.promoted) {
+        push({ type: "stop", priority: 6, reason: "The approved candidate has been applied; evidence is sufficient for this campaign.", evidence: [`experimentId=${record.candidate.experimentId}`], suggestedTool: "envia_campaign_report" });
+      }
+
+      const latestEvaluation = record.evaluations?.[record.evaluations.length - 1];
+      if (latestEvaluation) {
+        for (const candidate of latestEvaluation.candidates) {
+          if (candidate.missingEvidence.length > 0) {
+            push({ type: "run-missing-test", priority: 3, reason: `Candidate ${candidate.experimentId} has missing evidence.`, evidence: candidate.missingEvidence, suggestedTool: "envia_experiment_run" });
+          }
+        }
+        if (latestEvaluation.ranking.length >= 2 && latestEvaluation.ranking[0].overallScore === latestEvaluation.ranking[1].overallScore) {
+          push({ type: "request-human-guidance", priority: 4, reason: "Top candidates are tied; evidence is ambiguous.", evidence: latestEvaluation.ranking.slice(0, 2).map((entry) => `${entry.experimentId}:${entry.overallScore}`), requiresApproval: true });
+        }
+      }
+
+      if (recommendations.length === 0) {
+        push({ type: "stop", priority: 6, reason: "No further action is recommended from the current state.", evidence: [`status=${record.status}`], suggestedTool: "envia_campaign_report" });
+      }
+
+      recommendations.sort((a, b) => a.priority - b.priority || a.type.localeCompare(b.type));
+      return {
+        campaignId: id,
+        recommendations,
+        summary: `${recommendations.length} recommendation(s) generated from recorded campaign state.`,
+      };
     });
   }
 

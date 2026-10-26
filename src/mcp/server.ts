@@ -774,6 +774,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "envia_campaign_recommend_next",
+  {
+    title: "Recommend next experiment",
+    description: "Recommend the next bounded action for a campaign using recorded evidence and policy.",
+    inputSchema: { id: z.string().min(1) },
+  },
+  async (args) => {
+    try { return textResult({ recommendation: await campaignManager.recommendNext(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
   "envia_campaign_select_candidate",
   { title: "Select candidate", description: "Select a candidate experiment.", inputSchema: { id: z.string().min(1), experimentId: z.string().min(1) } },
   async (args) => {
