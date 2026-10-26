@@ -6,6 +6,7 @@ import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
 import { ExperimentManager } from "../experiments/manager.js";
+import { CampaignManager } from "../campaigns/manager.js";
 import { FaultManager } from "../faults/manager.js";
 import { RetentionManager } from "../retention/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
@@ -86,7 +87,7 @@ function getAllOptions(args: string[], name: string): string[] {
 }
 
 function print(value: unknown, json: boolean): void {
-  if (json) {
+  if (json || typeof value === "object") {
     process.stdout.write(JSON.stringify(value, null, 2) + "\n");
   } else {
     process.stdout.write(String(value) + "\n");
@@ -112,6 +113,8 @@ async function main(): Promise<number> {
   await agentRunManager.init();
   const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
   await experimentManager.init();
+  const campaignManager = new CampaignManager(baseDir, experimentManager);
+  await campaignManager.init();
   const faultManager = new FaultManager(baseDir, jailor);
   const retentionManager = new RetentionManager(baseDir);
   await retentionManager.init();
