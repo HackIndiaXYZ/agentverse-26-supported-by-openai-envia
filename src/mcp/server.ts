@@ -10,6 +10,7 @@ import { ImageStore } from "../images/store.js";
 import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
+import { ExperimentManager } from "../experiments/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
 
 const baseDir = process.env.ENVIA_HOME ?? path.join(os.homedir(), ".envia");
@@ -28,6 +29,8 @@ const networkManager = new NetworkManager(baseDir);
 await networkManager.init();
 const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUnsafe);
 await agentRunManager.init();
+const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
+await experimentManager.init();
 const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
 await jailhouseManager.init();
 
@@ -420,6 +423,114 @@ server.registerTool(
       });
       return textResult({ run: record });
     } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- experiment tools ---
+
+server.registerTool(
+  "envia_experiment_create",
+  {
+    title: "Create experiment",
+    description: "Create a disposable experiment from a source project.",
+    inputSchema: { name: z.string().min(1), sourceProject: z.string().min(1), image: z.string().optional(), command: z.string().optional(), networkMode: z.enum(["none", "host", "bridge"]).optional() },
+  },
+  async (args) => {
+    try {
+      const record = await experimentManager.create(args.name, { sourceProject: args.sourceProject, image: args.image, command: args.command, networkMode: args.networkMode });
+      return textResult({ experiment: record });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_status",
+  { title: "Experiment status", description: "Inspect an experiment.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ experiment: await experimentManager.inspect(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_run",
+  { title: "Run in experiment", description: "Execute a command in an experiment jail.", inputSchema: { id: z.string().min(1), command: z.string().min(1), args: z.array(z.string()).optional(), timeoutMs: z.number().int().positive().optional() } },
+  async (args) => {
+    try {
+      const result = await experimentManager.runCommand(args.id, args.command, args.args ?? [], { timeoutMs: args.timeoutMs });
+      return textResult({ result });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_checkpoint",
+  { title: "Checkpoint experiment", description: "Create a filesystem checkpoint.", inputSchema: { id: z.string().min(1), note: z.string().optional() } },
+  async (args) => {
+    try { return textResult({ checkpoint: await experimentManager.checkpoint(args.id, args.note) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_restore",
+  { title: "Restore checkpoint", description: "Restore an experiment to a checkpoint.", inputSchema: { id: z.string().min(1), checkpointId: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ experiment: await experimentManager.restore(args.id, args.checkpointId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_branch",
+  { title: "Branch experiment", description: "Branch an experiment from a checkpoint.", inputSchema: { id: z.string().min(1), checkpointId: z.string().optional(), name: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ experiment: await experimentManager.branch(args.id, args.checkpointId, args.name) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_timeline",
+  { title: "Experiment timeline", description: "Read the experiment execution ledger.", inputSchema: { id: z.string().min(1), limit: z.number().int().positive().optional() } },
+  async (args) => {
+    try { return textResult({ events: await experimentManager.timeline(args.id, args.limit ?? 1000) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_compare_checkpoints",
+  { title: "Compare checkpoints", description: "Compare two checkpoints.", inputSchema: { id: z.string().min(1), left: z.string().min(1), right: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ diff: await experimentManager.compareCheckpoints(args.id, args.left, args.right) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_replay",
+  { title: "Replay experiment", description: "Replay recorded commands in a new experiment branch.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ replay: await experimentManager.replay(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_cancel",
+  { title: "Cancel experiment", description: "Cancel and stop an experiment.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ experiment: await experimentManager.cancel(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_dispose",
+  { title: "Dispose experiment", description: "Dispose an experiment and delete its state.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { await experimentManager.dispose(args.id); return textResult({ disposed: args.id }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_experiment_prepare_change",
+  { title: "Prepare change set", description: "Prepare a reviewable change set from a checkpoint.", inputSchema: { id: z.string().min(1), checkpointId: z.string().optional() } },
+  async (args) => {
+    try { return textResult({ changeSet: await experimentManager.prepareChangeSet(args.id, args.checkpointId) }); } catch (e) { return errorResult(e); }
   }
 );
 

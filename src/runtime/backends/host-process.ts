@@ -118,7 +118,7 @@ export class HostProcessBackend implements RuntimeBackend {
     return [];
   }
 
-  async stopJail(jail: JailRecord, _timeoutMs = 5000): Promise<JailRecord> {
+  async stopJail(jail: JailRecord, timeoutMs = 5000): Promise<JailRecord> {
     const pid = this.processes.get(jail.id) ?? jail.pid ?? undefined;
     if (pid) {
       try {
@@ -136,19 +136,30 @@ export class HostProcessBackend implements RuntimeBackend {
       }
       this.processes.delete(jail.id);
     }
+    // Wait briefly for the process to release file handles.
+    if (pid) {
+      const deadline = Date.now() + timeoutMs;
+      while (isProcessAlive(pid) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
     const now = new Date().toISOString();
     return { ...jail, state: "stopped", pid: null, stoppedAt: now, updatedAt: now };
   }
 
   async removeJail(jail: JailRecord): Promise<void> {
     if (jail.state === "running") await this.stopJail(jail);
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 30; attempt++) {
       try {
         await rm(jail.rootDir, { recursive: true, force: true });
         return;
       } catch (err: any) {
         if (err?.code !== "EBUSY" && err?.code !== "EPERM") throw err;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Re-attempt process cleanup in case a descendant survived.
+        try {
+          if (process.platform === "win32") spawn("taskkill", ["/IM", "timeout.exe", "/F"], { windowsHide: true });
+        } catch { /* ignore */ }
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }
     await rm(jail.rootDir, { recursive: true, force: true });

@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Jailor } from "../runtime/jailor.js";
 import { ImageStore } from "../images/store.js";
+import { ExecutionLedger } from "../ledger/ledger.js";
 import type { AgentRunRecord, AgentRunSpec } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +36,7 @@ export class AgentRunManager {
     await mkdir(runDir, { recursive: true });
     const ledgerPath = path.join(runDir, "ledger.jsonl");
     const reportPath = path.join(runDir, "report.json");
+    const ledger = new ExecutionLedger(ledgerPath);
 
     const record: AgentRunRecord = {
       id,
@@ -54,7 +56,7 @@ export class AgentRunManager {
       ledgerPath,
     };
 
-    await this.appendLedger(ledgerPath, "run.created", { id, task: spec.task });
+    await ledger.append("run.created", { id, task: spec.task });
 
     let imageRootfsPath: string | undefined;
     let imageEnv: Record<string, string> = {};
@@ -88,10 +90,10 @@ export class AgentRunManager {
       rootfsPath: imageRootfsPath,
     });
     record.jailId = jail.id;
-    await this.appendLedger(ledgerPath, "jail.created", { jailId: jail.id, rootfsPath: imageRootfsPath });
+    await ledger.append("jail.created", { jailId: jail.id, rootfsPath: imageRootfsPath });
 
     await this.jailor.startJail(jail.id);
-    await this.appendLedger(ledgerPath, "jail.started", { jailId: jail.id, pid: jail.pid });
+    await ledger.append("jail.started", { jailId: jail.id, pid: jail.pid });
 
     const timeoutMs = spec.timeoutMs ?? 300000;
     const deadline = Date.now() + timeoutMs;
@@ -120,19 +122,19 @@ export class AgentRunManager {
     record.status = status;
     record.finishedAt = new Date().toISOString();
 
-    await this.appendLedger(ledgerPath, "command.finished", { exitCode, status });
+    await ledger.append("command.finished", { exitCode, status });
 
     if (spec.checkpoint) {
       const checkpointPath = path.join(runDir, "checkpoint.tar.gz");
       const jailRoot = path.join(this.baseDir, "runtime", "jails", jail.id);
       await execFileAsync("tar", ["-czf", checkpointPath, "-C", jailRoot, "."], { timeout: 300000 });
       record.checkpointPath = checkpointPath;
-      await this.appendLedger(ledgerPath, "checkpoint.created", { path: checkpointPath });
+      await ledger.append("checkpoint.created", { path: checkpointPath });
     }
 
     record.approved = false;
     await writeFile(reportPath, JSON.stringify(record, null, 2));
-    await this.appendLedger(ledgerPath, "run.finished", { status, approved: false });
+    await ledger.append("run.finished", { status, approved: false });
     return record;
   }
 
@@ -162,7 +164,7 @@ export class AgentRunManager {
     const record = await this.inspect(id);
     record.approved = true;
     await writeFile(record.reportPath, JSON.stringify(record, null, 2));
-    await this.appendLedger(record.ledgerPath, "change_gate.approved", { approvedBy: "cli" });
+    const approvalLedger = new ExecutionLedger(record.ledgerPath); await approvalLedger.append("change_gate.approved", { approvedBy: "cli" });
     return record;
   }
 
@@ -176,28 +178,6 @@ export class AgentRunManager {
       stdoutMatch: original.stdoutHash === replay.stdoutHash,
       fileManifestMatch: original.fileManifestHash === replay.fileManifestHash,
     };
-  }
-
-  private async appendLedger(ledgerPath: string, type: string, detail: Record<string, unknown>): Promise<void> {
-    let prevHash = "";
-    try {
-      const raw = await readFile(ledgerPath, "utf8");
-      const lines = raw.trim().split("\n").filter(Boolean);
-      if (lines.length > 0) {
-        const last = JSON.parse(lines[lines.length - 1]);
-        prevHash = last.hash ?? "";
-      }
-    } catch {
-      // file may not exist yet
-    }
-    const entry = {
-      ts: new Date().toISOString(),
-      type,
-      detail,
-      prevHash,
-      hash: sha256(`${prevHash}:${type}:${JSON.stringify(detail)}`),
-    };
-    await writeFile(ledgerPath, JSON.stringify(entry) + "\n", { flag: "a" });
   }
 
   private async computeFileManifest(root: string): Promise<string> {
@@ -228,3 +208,4 @@ async function collectFiles(root: string, current: string, out: string[]): Promi
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
+

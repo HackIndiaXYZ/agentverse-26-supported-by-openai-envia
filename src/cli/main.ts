@@ -5,6 +5,7 @@ import { ImageBuilder } from "../images/builder.js";
 import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
+import { ExperimentManager } from "../experiments/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
 import os from "node:os";
 import path from "node:path";
@@ -107,6 +108,8 @@ async function main(): Promise<number> {
   await networkManager.init();
   const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUnsafe);
   await agentRunManager.init();
+  const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
+  await experimentManager.init();
   const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
   await jailhouseManager.init();
 
