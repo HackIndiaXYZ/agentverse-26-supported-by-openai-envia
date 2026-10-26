@@ -82,7 +82,7 @@ The process should remain running and speak MCP over stdio. It does not print a 
 
 A minimal JSON-RPC initialize request should return a server info object with `name: "envia"` and `version: "0.1.0"`.
 
-Tool discovery should return 60 tools, including `envia_campaign_create`, `envia_campaign_apply`, and `envia_transaction_recover`.
+Tool discovery should return 65 tools, including `envia_campaign_evaluate`, `envia_campaign_recommend_next`, `envia_campaign_plan`, and `envia_transaction_recover`.
 
 ## 6. Troubleshooting
 

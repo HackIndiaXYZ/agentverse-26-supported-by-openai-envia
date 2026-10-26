@@ -21,6 +21,10 @@
 | Retention controls | Implemented and tested (preview, cleanup, disk usage) |
 | Fault injection | Implemented (bounded best-effort and unsupported modes reported honestly) |
 | Experiment intelligence | Implemented (hypothesis, evidence, conclusions, comparison, change verification) |
+| Evidence-based evaluation | Implemented and tested (configurable criteria, deterministic scoring, missing evidence, ranking, policy) |
+| Failure forensics | Implemented (redacted command, ledger, fault, recovery, and signature correlation) |
+| Next-experiment recommendations | Implemented (deterministic recommendations from campaign state) |
+| Bounded campaign planning | Implemented (validated plans, approval, deviation tracking) |
 | Agent experiment campaigns | Implemented and tested (lifecycle, bounded concurrency, cancellation, locking, candidate workflow); verified on Windows host-process backend; concurrency tested with serial and bounded workers |
 | Bounded recovery loop | Implemented and tested (injectable provider, attempt budgets, persisted history, unsafe-path rejection, malformed-output handling); timeout enforcement is cooperative and provider cancellation is best-effort |
 | Source-project protection | Tested for checkpoint restore, journaled candidate application, rollback, and recovery path containment; direct application requires approval and confirmation; multi-file application is recoverable but not globally atomic |

@@ -109,7 +109,7 @@ Installed packages also expose `envia` and `envia-mcp` binaries.
 
 ## MCP tools
 
-Envia registers 60 MCP tools across these groups:
+Envia registers 65 MCP tools across these groups:
 
 | Group | Examples |
 |---|---|
@@ -120,6 +120,7 @@ Envia registers 60 MCP tools across these groups:
 | Agent runs | `envia_agent_run` |
 | Experiments | `envia_experiment_create`, `envia_experiment_checkpoint`, `envia_experiment_compare` |
 | Campaigns | `envia_campaign_create`, `envia_campaign_start`, `envia_campaign_apply` |
+| Evaluation and planning | `envia_campaign_evaluate`, `envia_campaign_explain_failure`, `envia_campaign_recommend_next`, `envia_campaign_plan` |
 | Transactions | `envia_transaction_list`, `envia_transaction_recover` |
 | Redaction, retention, faults | `envia_redaction_policy`, `envia_retention_preview`, `envia_fault_types` |
 
