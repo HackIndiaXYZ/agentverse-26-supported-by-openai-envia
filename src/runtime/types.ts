@@ -34,6 +34,7 @@ export interface JailSpec {
   limits?: JailLimits;
   networkMode?: "none" | "host" | "bridge";
   isolationRequired?: boolean;
+  networkRequired?: boolean;
   allowUnsafeHostProcess?: boolean;
   /** Optional image rootfs directory to copy into the jail root at creation time. */
   rootfsPath?: string;

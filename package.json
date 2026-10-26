@@ -17,11 +17,19 @@
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
-  "keywords": ["mcp", "ai-agents", "sandbox", "envia", "hackindia"],
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "sandbox",
+    "envia",
+    "hackindia"
+  ],
   "author": "dksh3",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^5.5.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {

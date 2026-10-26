@@ -1,10 +1,11 @@
 import { Jailor } from "../runtime/jailor.js";
-import { HostProcessBackend } from "../runtime/backends/host-process.js";
+import { createBackend } from "../runtime/backend-factory.js";
 import { ImageStore } from "../images/store.js";
 import { ImageBuilder } from "../images/builder.js";
 import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
+import { JailhouseManager } from "../jailhouse/manager.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -46,6 +47,26 @@ function parseMount(entry: string, volumeManager: VolumeManager): { source: stri
   return { source, target, readOnly };
 }
 
+function resolveJailhouseConfigPath(rest: string[]): string {
+  const positional = rest.find((a) => !a.startsWith("-"));
+  if (positional && /\.(json|ya?ml)$/i.test(positional)) {
+    return path.resolve(process.cwd(), positional);
+  }
+  const file = getOption(rest, "--file");
+  if (file) return path.resolve(process.cwd(), file);
+  const candidates = ["jailhouse.json", "jailhouse.yml", "jailhouse.yaml", "compose.json", "compose.yml", "compose.yaml"];
+  for (const name of candidates) {
+    const full = path.resolve(process.cwd(), name);
+    try {
+      const fs = require("node:fs");
+      if (fs.existsSync(full)) return full;
+    } catch {
+      // ignore
+    }
+  }
+  return path.resolve(process.cwd(), "jailhouse.json");
+}
+
 function getAllOptions(args: string[], name: string): string[] {
   const values: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -67,7 +88,8 @@ async function main(): Promise<number> {
   const json = hasFlag(args, "--json");
   const baseDir = getBaseDir();
   const allowUnsafe = hasFlag(args, "--unsafe-host-process") || process.env.ENVIA_ALLOW_HOST_PROCESS_BACKEND === "1";
-  const backend = new HostProcessBackend({ baseDir, allowUnsafeHostProcess: allowUnsafe });
+  const backendName = (getOption(args, "--backend") ?? process.env.ENVIA_RUNTIME_BACKEND) as any;
+  const backend = createBackend({ baseDir, backend: backendName, allowUnsafeHostProcess: allowUnsafe, allowUnsafeLinux: allowUnsafe });
   const jailor = new Jailor(baseDir, backend);
   await jailor.init();
   const imageStore = new ImageStore(baseDir);
@@ -78,6 +100,8 @@ async function main(): Promise<number> {
   await networkManager.init();
   const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUnsafe);
   await agentRunManager.init();
+  const jailhouseManager = new JailhouseManager(baseDir, jailor, imageStore, volumeManager, networkManager, allowUnsafe);
+  await jailhouseManager.init();
 
   const filteredArgs = args.filter((a) => a !== "--json");
   let group = filteredArgs[0];
@@ -90,7 +114,7 @@ async function main(): Promise<number> {
   }
 
   if (group === "system" && command === "doctor") {
-    print({ baseDir, capabilities: jailor.capabilities() }, json);
+    print({ baseDir, backend: backend.name, capabilities: jailor.capabilities(), platform: process.platform }, json);
     return 0;
   }
 
@@ -128,6 +152,8 @@ async function main(): Promise<number> {
       ),
       workingDirectory: getOption(rest, "--workdir"),
       mounts,
+      networkMode: getOption(rest, "--network") as any,
+      networkRequired: hasFlag(rest, "--require-network-isolation"),
       isolationRequired,
       allowUnsafeHostProcess: hasFlag(rest, "--unsafe-host-process"),
     });
@@ -303,6 +329,94 @@ async function main(): Promise<number> {
     return record.status === "succeeded" ? 0 : 1;
   }
 
+  if (group === "jailhouse" && command === "config") {
+    const configPath = resolveJailhouseConfigPath(rest);
+    const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+    const config = jailhouseManager.parseConfig(text, configPath);
+    jailhouseManager.validateConfig(config);
+    print(config, json);
+    return 0;
+  }
+
+  if (group === "jailhouse" && command === "up") {
+    const configPath = resolveJailhouseConfigPath(rest);
+    const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+    const config = jailhouseManager.parseConfig(text, configPath);
+    jailhouseManager.validateConfig(config);
+    const state = await jailhouseManager.up(config, configPath, {
+      detach: hasFlag(rest, "-d") || hasFlag(rest, "--detach"),
+      profiles: getAllOptions(rest, "--profile"),
+      allowUnsafe,
+    });
+    print(state, json);
+    return 0;
+  }
+
+  if (group === "jailhouse" && command === "down") {
+    const positional = rest.find((a) => !a.startsWith("-"));
+    let appName = positional && !/\.(json|ya?ml)$/i.test(positional) ? positional : undefined;
+    if (!appName) {
+      const configPath = resolveJailhouseConfigPath(rest);
+      const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+      const config = jailhouseManager.parseConfig(text, configPath);
+      appName = config.name ?? path.basename(path.dirname(configPath));
+    }
+    await jailhouseManager.down(appName, { volumes: hasFlag(rest, "--volumes") || hasFlag(rest, "-v") });
+    print({ down: appName }, json);
+    return 0;
+  }
+
+  if (group === "jailhouse" && command === "ps") {
+    const positional = rest.find((a) => !a.startsWith("-"));
+    let appName = positional && !/\.(json|ya?ml)$/i.test(positional) ? positional : undefined;
+    if (!appName) {
+      const configPath = resolveJailhouseConfigPath(rest);
+      const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+      const config = jailhouseManager.parseConfig(text, configPath);
+      appName = config.name ?? path.basename(path.dirname(configPath));
+    }
+    print(await jailhouseManager.ps(appName), json);
+    return 0;
+  }
+
+  if (group === "jailhouse" && (command === "logs")) {
+    const positional = rest.filter((a) => !a.startsWith("-"));
+    let appName: string | undefined;
+    let service: string | undefined;
+    if (positional.length === 1) {
+      if (/\.(json|ya?ml)$/i.test(positional[0])) {
+        const configPath = path.resolve(process.cwd(), positional[0]);
+        const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+        const config = jailhouseManager.parseConfig(text, configPath);
+        appName = config.name ?? path.basename(path.dirname(configPath));
+      } else {
+        const { existsSync } = await import("node:fs");
+        const appDir = path.join(baseDir, "jailhouse", positional[0]);
+        if (existsSync(appDir)) {
+          appName = positional[0];
+        } else {
+          const configPath = resolveJailhouseConfigPath(rest);
+          const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+          const config = jailhouseManager.parseConfig(text, configPath);
+          appName = config.name ?? path.basename(path.dirname(configPath));
+          service = positional[0];
+        }
+      }
+    } else if (positional.length >= 2) {
+      appName = positional[0];
+      service = positional[1];
+    }
+    if (!appName) {
+      const configPath = resolveJailhouseConfigPath(rest);
+      const text = await (await import("node:fs/promises")).readFile(configPath, "utf8");
+      const config = jailhouseManager.parseConfig(text, configPath);
+      appName = config.name ?? path.basename(path.dirname(configPath));
+    }
+    const lines = getOption(rest, "--lines") ? Number(getOption(rest, "--lines")) : 100;
+    print(await jailhouseManager.logs(appName, service, lines), json);
+    return 0;
+  }
+
   if (group === "volume" && command === "rm" && rest[0]) {
     await volumeManager.remove(rest[0]);
     print({ removed: rest[0] }, json);
@@ -410,6 +524,8 @@ async function main(): Promise<number> {
       env,
       workingDirectory: getOption(rest, "--workdir") ?? imageManifest?.config?.workingDir,
       mounts,
+      networkMode: getOption(rest, "--network") as any,
+      networkRequired: hasFlag(rest, "--require-network-isolation"),
       limits: {},
       isolationRequired,
       allowUnsafeHostProcess: hasFlag(rest, "--unsafe-host-process"),

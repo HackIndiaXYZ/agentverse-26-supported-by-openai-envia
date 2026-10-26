@@ -41,6 +41,9 @@ export class Jailor {
     if (spec.isolationRequired !== false && this.backend.capabilities().isolation !== "enforced") {
       throw new Error("backend cannot satisfy required isolation");
     }
+    if (spec.networkRequired === true && this.backend.capabilities().network !== "enforced") {
+      throw new Error("backend cannot satisfy required network isolation");
+    }
     const jail = await this.backend.createJail(spec);
     const jails = await this.stateStore.readJails();
     jails.push(jail);
