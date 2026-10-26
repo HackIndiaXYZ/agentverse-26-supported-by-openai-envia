@@ -786,6 +786,64 @@ server.registerTool(
 );
 
 server.registerTool(
+  "envia_campaign_plan",
+  {
+    title: "Plan campaign",
+    description: "Validate and create a bounded campaign plan, optionally attaching it to a campaign.",
+    inputSchema: {
+      id: z.string().min(1).optional(),
+      objective: z.string().min(1),
+      acceptanceCriteria: z.array(z.string()).optional(),
+      experiments: z.array(z.object({
+        name: z.string().min(1),
+        hypothesis: z.string().optional(),
+        objective: z.string().optional(),
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        timeoutMs: z.number().int().positive().optional(),
+        resourceLimits: z.object({ cpuMillis: z.number().int().nonnegative().optional(), memoryBytes: z.number().int().nonnegative().optional(), pids: z.number().int().nonnegative().optional() }).optional(),
+      })),
+      evaluationCriteria: z.array(z.string()).optional(),
+      resourceBudget: z.object({ maxConcurrency: z.number().int().positive().optional(), timeoutMs: z.number().int().positive().optional() }).optional(),
+      attemptBudget: z.object({ maxAttempts: z.number().int().positive().optional() }).optional(),
+      stopConditions: z.array(z.string()).optional(),
+      approvalRequired: z.boolean().optional(),
+    },
+  },
+  async (args) => {
+    try {
+      const plan = campaignManager.planCampaign({
+        objective: args.objective,
+        acceptanceCriteria: args.acceptanceCriteria,
+        experiments: args.experiments,
+        evaluationCriteria: args.evaluationCriteria,
+        resourceBudget: args.resourceBudget,
+        attemptBudget: args.attemptBudget,
+        stopConditions: args.stopConditions,
+        approvalRequired: args.approvalRequired,
+      });
+      if (args.id) {
+        const campaign = await campaignManager.attachPlan(args.id, plan);
+        return textResult({ plan, campaign });
+      }
+      return textResult({ plan });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_approve_plan",
+  {
+    title: "Approve campaign plan",
+    description: "Approve or reject a campaign plan before execution.",
+    inputSchema: { id: z.string().min(1), approved: z.boolean(), reason: z.string().optional() },
+  },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.approvePlan(args.id, args.approved, args.reason) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
   "envia_campaign_select_candidate",
   { title: "Select candidate", description: "Select a candidate experiment.", inputSchema: { id: z.string().min(1), experimentId: z.string().min(1) } },
   async (args) => {

@@ -80,6 +80,7 @@ export interface CampaignRecord {
   failure?: string;
   evaluationConfig?: EvaluationConfig;
   evaluations?: EvaluationReport[];
+  plan?: CampaignPlan;
 }
 
 export interface CampaignRecommendation {
@@ -89,4 +90,30 @@ export interface CampaignRecommendation {
   evidence: string[];
   suggestedTool?: string;
   requiresApproval?: boolean;
+}
+
+export interface CampaignPlanExperiment {
+  name: string;
+  hypothesis?: string;
+  objective?: string;
+  command?: string;
+  args?: string[];
+  timeoutMs?: number;
+  resourceLimits?: { cpuMillis?: number; memoryBytes?: number; pids?: number };
+}
+
+export interface CampaignPlan {
+  version: string;
+  objective: string;
+  acceptanceCriteria: string[];
+  experiments: CampaignPlanExperiment[];
+  evaluationCriteria?: string[];
+  resourceBudget?: { maxConcurrency?: number; timeoutMs?: number };
+  attemptBudget?: { maxAttempts?: number };
+  stopConditions: string[];
+  approvalRequired: boolean;
+  approved?: boolean;
+  approvedAt?: string;
+  approvalReason?: string;
+  deviations?: string[];
 }

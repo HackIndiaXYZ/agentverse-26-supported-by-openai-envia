@@ -11,7 +11,7 @@ import { safeRelativePath, isPathInside, resolveInside } from "../security/paths
 import { SecretRedactor } from "../security/redactor.js";
 import { LockManager } from "../coordination/lock-manager.js";
 import { TransactionManager } from "../transactions/manager.js";
-import type { CampaignComparison, CampaignExperiment, CampaignExperimentDefinition, CampaignRecord, CampaignStatus, CampaignRecommendation } from "./types.js";
+import type { CampaignComparison, CampaignExperiment, CampaignExperimentDefinition, CampaignRecord, CampaignStatus, CampaignRecommendation, CampaignPlan, CampaignPlanExperiment } from "./types.js";
 
 const VALID_TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   planned: ["ready", "running", "cancelled", "failed", "interrupted"],
@@ -189,9 +189,20 @@ export class CampaignManager {
   async start(id: string, definitions: CampaignExperimentDefinition[], options: { serial?: boolean; cancelRequested?: () => boolean } = {}): Promise<CampaignRecord> {
     return this.withLock(id, async () => {
       const record = await this.read(id);
+      if (record.plan?.approvalRequired && record.plan.approved !== true) throw new Error("campaign plan requires approval before execution");
       if (record.status === "planned") this.transition(record, "ready");
       if (record.status !== "ready" && record.status !== "running" && record.status !== "failed" && record.status !== "blocked" && record.status !== "interrupted") {
         throw new Error(`campaign cannot start from status ${record.status}`);
+      }
+      if (record.plan) {
+        const deviations: string[] = [];
+        if (record.plan.experiments.length !== definitions.length) deviations.push(`experiment count changed from ${record.plan.experiments.length} to ${definitions.length}`);
+        for (let i = 0; i < Math.max(record.plan.experiments.length, definitions.length); i += 1) {
+          const planned = record.plan.experiments[i]?.name;
+          const actual = definitions[i]?.name;
+          if (planned !== actual) deviations.push(`experiment ${i + 1} changed from ${planned ?? "<none>"} to ${actual ?? "<none>"}`);
+        }
+        record.plan.deviations = deviations;
       }
       this.transition(record, "running");
       await this.ensureExperiments(record, definitions);
@@ -593,6 +604,74 @@ export class CampaignManager {
         failures,
         summary: failures.length === 0 ? "No failed experiments were found." : `${failures.length} experiment(s) analyzed.`,
       };
+    });
+  }
+
+  validatePlan(plan: CampaignPlan): string[] {
+    const errors: string[] = [];
+    if (!plan.objective || typeof plan.objective !== "string") errors.push("plan objective is required");
+    if (!Array.isArray(plan.acceptanceCriteria)) errors.push("acceptanceCriteria must be an array");
+    if (!Array.isArray(plan.experiments) || plan.experiments.length === 0) errors.push("plan requires at least one experiment");
+    if (plan.experiments.length > 10) errors.push("plan exceeds maximum of 10 experiments");
+    for (const experiment of plan.experiments ?? []) {
+      if (!experiment.name) errors.push("experiment name is required");
+      if (experiment.timeoutMs !== undefined && (!Number.isInteger(experiment.timeoutMs) || experiment.timeoutMs <= 0)) errors.push(`invalid timeout for ${experiment.name}`);
+      if (experiment.resourceLimits?.cpuMillis !== undefined && experiment.resourceLimits.cpuMillis < 0) errors.push(`invalid cpu limit for ${experiment.name}`);
+      if (experiment.resourceLimits?.memoryBytes !== undefined && experiment.resourceLimits.memoryBytes < 0) errors.push(`invalid memory limit for ${experiment.name}`);
+      if (experiment.resourceLimits?.pids !== undefined && experiment.resourceLimits.pids < 0) errors.push(`invalid pid limit for ${experiment.name}`);
+    }
+    if (!Array.isArray(plan.stopConditions)) errors.push("stopConditions must be an array");
+    if (typeof plan.approvalRequired !== "boolean") errors.push("approvalRequired must be a boolean");
+    return errors;
+  }
+
+  planCampaign(input: {
+    objective: string;
+    acceptanceCriteria?: string[];
+    experiments: CampaignPlanExperiment[];
+    evaluationCriteria?: string[];
+    resourceBudget?: { maxConcurrency?: number; timeoutMs?: number };
+    attemptBudget?: { maxAttempts?: number };
+    stopConditions?: string[];
+    approvalRequired?: boolean;
+  }): CampaignPlan {
+    const plan: CampaignPlan = {
+      version: "1",
+      objective: input.objective,
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      experiments: input.experiments,
+      evaluationCriteria: input.evaluationCriteria,
+      resourceBudget: input.resourceBudget,
+      attemptBudget: input.attemptBudget,
+      stopConditions: input.stopConditions ?? ["budget exhausted", "evidence sufficient", "human guidance required"],
+      approvalRequired: input.approvalRequired ?? true,
+      approved: !(input.approvalRequired ?? true),
+    };
+    const errors = this.validatePlan(plan);
+    if (errors.length > 0) throw new Error(`invalid campaign plan: ${errors.join("; ")}`);
+    return plan;
+  }
+
+  async attachPlan(id: string, plan: CampaignPlan): Promise<CampaignRecord> {
+    return this.withLock(id, async () => {
+      const record = await this.read(id);
+      const errors = this.validatePlan(plan);
+      if (errors.length > 0) throw new Error(`invalid campaign plan: ${errors.join("; ")}`);
+      record.plan = { ...plan, approved: plan.approvalRequired ? false : true };
+      await this.write(record);
+      return record;
+    });
+  }
+
+  async approvePlan(id: string, approved: boolean, reason?: string): Promise<CampaignRecord> {
+    return this.withLock(id, async () => {
+      const record = await this.read(id);
+      if (!record.plan) throw new Error("campaign has no plan");
+      record.plan.approved = approved;
+      record.plan.approvedAt = new Date().toISOString();
+      record.plan.approvalReason = this.redactor.redactText(reason ?? "");
+      await this.write(record);
+      return record;
     });
   }
 
