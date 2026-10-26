@@ -762,6 +762,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "envia_campaign_explain_failure",
+  {
+    title: "Explain campaign failure",
+    description: "Produce a redacted failure-forensics report for a campaign or experiment.",
+    inputSchema: { id: z.string().min(1), experimentId: z.string().min(1).optional() },
+  },
+  async (args) => {
+    try { return textResult({ forensics: await campaignManager.explainFailure(args.id, args.experimentId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
   "envia_campaign_select_candidate",
   { title: "Select candidate", description: "Select a candidate experiment.", inputSchema: { id: z.string().min(1), experimentId: z.string().min(1) } },
   async (args) => {

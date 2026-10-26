@@ -435,6 +435,96 @@ export class CampaignManager {
     });
   }
 
+  async explainFailure(id: string, experimentId?: string): Promise<Record<string, unknown>> {
+    return this.withLock(id, async () => {
+      const record = await this.read(id);
+      const targets = record.experiments.filter((experiment) => !experimentId || experiment.experimentId === experimentId);
+      const failures = [];
+
+      for (const campaignExperiment of targets) {
+        if (!campaignExperiment.experimentId) continue;
+        const experiment = await this.experimentManager.inspect(campaignExperiment.experimentId);
+        const failedCommands = experiment.commands.filter((command) => command.exitCode !== 0 || command.timedOut);
+        const timeline = await this.experimentManager.timeline(experiment.id, 1000);
+        let faults: unknown[] = [];
+        try {
+          const raw = await readFile(path.join(this.experimentManager.getBaseDir(), "experiments", experiment.id, "faults.json"), "utf8");
+          const parsed = JSON.parse(raw);
+          faults = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          faults = [];
+        }
+
+        const signatures = new Map<string, number>();
+        for (const command of failedCommands) {
+          const signature = this.redactor.redactText(`${command.command}:${command.exitCode}:${command.stderr.slice(0, 200)}`);
+          signatures.set(signature, (signatures.get(signature) ?? 0) + 1);
+        }
+        const repeatedSignatures = Array.from(signatures.entries())
+          .filter(([, count]) => count > 1)
+          .map(([signature, count]) => ({ signature, count }));
+
+        const latestCheckpoint = experiment.checkpoints.length ? experiment.checkpoints[experiment.checkpoints.length - 1] : undefined;
+        const changedFiles = latestCheckpoint
+          ? Object.keys((await this.experimentManager.readCheckpoint(experiment.id, latestCheckpoint)).fileManifest ?? {})
+          : [];
+
+        const inferred: Array<{ cause: string; confidence: "low" | "medium"; evidence: string }> = [];
+        const combinedStderr = failedCommands.map((command) => command.stderr).join("\n");
+        if (/ENOENT|not found|no such file/i.test(combinedStderr)) {
+          inferred.push({ cause: "A required file or command may be missing.", confidence: "medium", evidence: "stderr contains a not-found/ENOENT-style message" });
+        }
+        if (/timeout/i.test(combinedStderr) || failedCommands.some((command) => command.timedOut)) {
+          inferred.push({ cause: "The experiment may have exceeded its time budget.", confidence: "medium", evidence: "a command timed out or stderr mentions timeout" });
+        }
+        if (/TypeError|ReferenceError|SyntaxError/i.test(combinedStderr)) {
+          inferred.push({ cause: "The experiment hit a JavaScript runtime or syntax error.", confidence: "medium", evidence: "stderr contains a runtime/syntax error" });
+        }
+        if (inferred.length === 0) {
+          inferred.push({ cause: "No specific root cause is established from the recorded evidence.", confidence: "low", evidence: "available stderr and timeline do not match a known signature" });
+        }
+
+        failures.push({
+          experimentId: experiment.id,
+          name: experiment.name,
+          status: experiment.status,
+          observed: {
+            failedCommandCount: failedCommands.length,
+            timedOutCount: failedCommands.filter((command) => command.timedOut).length,
+            commandCount: experiment.commands.length,
+            checkpointCount: experiment.checkpoints.length,
+            latestCheckpoint,
+            faultCount: faults.length,
+            recoveryAttemptCount: record.recoveryAttempts.filter((attempt) => attempt.experimentId === experiment.id).length,
+            ledgerEventCount: timeline.length,
+            changedFileCount: changedFiles.length,
+          },
+          failedCommands: failedCommands.map((command) => ({
+            id: command.id,
+            command: this.redactor.redactText(command.command),
+            args: command.args.map((arg) => this.redactor.redactText(arg)),
+            exitCode: command.exitCode,
+            timedOut: command.timedOut,
+            stderr: this.redactor.redactText(command.stderr.slice(0, 2000)),
+          })),
+          timeline: timeline.slice(-50),
+          faults,
+          recoveryAttempts: record.recoveryAttempts.filter((attempt) => attempt.experimentId === experiment.id),
+          repeatedSignatures,
+          inferred,
+        });
+      }
+
+      return {
+        campaignId: id,
+        generatedAt: new Date().toISOString(),
+        failureCount: failures.length,
+        failures,
+        summary: failures.length === 0 ? "No failed experiments were found." : `${failures.length} experiment(s) analyzed.`,
+      };
+    });
+  }
+
   async report(id: string): Promise<Record<string, unknown>> {
     return this.withLock(id, async () => {
       const record = await this.read(id);
