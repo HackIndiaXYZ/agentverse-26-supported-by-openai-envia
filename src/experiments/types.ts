@@ -60,6 +60,8 @@ export interface ExperimentRecord {
   checkpoints: string[];
   commands: ExperimentCommandResult[];
   resultSummary?: string;
+  recoveryAttempts?: Array<Record<string, unknown>>;
+  recoveryBudget?: { maxAttempts: number; deadlineAt: string; createdAt: string };
   hypothesis?: string;
   objective?: string;
   method?: string;

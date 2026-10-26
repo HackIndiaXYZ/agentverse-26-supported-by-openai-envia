@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Jailor } from "../runtime/jailor.js";
 import { ImageStore } from "../images/store.js";
+import { LockManager } from "../coordination/lock-manager.js";
 import { ExecutionLedger } from "../ledger/ledger.js";
 import { SecretRedactor, RedactionConfigManager } from "../security/redactor.js";
 import { createTarSnapshot, extractTarSnapshot, computeFileManifest, clearDirectory, copyDirectoryContents } from "../storage/snapshot.js";
@@ -11,21 +12,26 @@ import type { Checkpoint, ExperimentCommandResult, ExperimentConfig, ExperimentR
 
 export class ExperimentManager {
   private baseDir: string;
+
+  getBaseDir(): string { return this.baseDir; }
   private experimentsDir: string;
   private jailor: Jailor;
   private imageStore: ImageStore;
   private redactor: SecretRedactor;
+  private lockManager: LockManager;
 
-  constructor(baseDir: string, jailor: Jailor, imageStore: ImageStore) {
+  constructor(baseDir: string, jailor: Jailor, imageStore: ImageStore, lockManager?: LockManager) {
     this.baseDir = baseDir;
     this.experimentsDir = path.join(baseDir, "experiments");
     this.jailor = jailor;
     this.imageStore = imageStore;
     this.redactor = new SecretRedactor();
+    this.lockManager = lockManager ?? new LockManager(baseDir);
   }
 
   async init(): Promise<void> {
     await mkdir(this.experimentsDir, { recursive: true });
+    await this.lockManager.init();
     const config = await new RedactionConfigManager(this.baseDir).load();
     this.redactor = new SecretRedactor(config);
   }
@@ -41,7 +47,11 @@ export class ExperimentManager {
 
   private async writeRecord(record: ExperimentRecord): Promise<void> {
     record.updatedAt = new Date().toISOString();
-    await writeFile(path.join(this.experimentDir(record.id), "experiment.json"), JSON.stringify(record, null, 2));
+    await mkdir(this.experimentDir(record.id), { recursive: true });
+    const target = path.join(this.experimentDir(record.id), "experiment.json");
+    const temp = `${target}.${crypto.randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify(record, null, 2));
+    await rename(temp, target);
   }
 
   private ledger(record: ExperimentRecord): ExecutionLedger {
@@ -351,6 +361,20 @@ export class ExperimentManager {
     return this.readRecord(experimentId);
   }
 
+  async setRecoveryAttempts(experimentId: string, attempts: Array<Record<string, unknown>>): Promise<ExperimentRecord> {
+    const record = await this.readRecord(experimentId);
+    record.recoveryAttempts = attempts;
+    await this.writeRecord(record);
+    return record;
+  }
+
+  async setRecoveryBudget(experimentId: string, budget: { maxAttempts: number; deadlineAt: string; createdAt: string }): Promise<ExperimentRecord> {
+    const record = await this.readRecord(experimentId);
+    record.recoveryBudget = budget;
+    await this.writeRecord(record);
+    return record;
+  }
+
   async timeline(experimentId: string, limit = 1000): Promise<unknown[]> {
     const record = await this.readRecord(experimentId);
     return this.ledger(record).read(limit);
@@ -449,23 +473,27 @@ export class ExperimentManager {
     const patchPath = path.join(this.experimentDir(experimentId), "candidate.patch");
     let content = "";
     try {
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execFileAsync = promisify(execFile);
-      const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", baselineDir, record.rootDir], { timeout: 120000 });
-      content = stdout;
-    } catch (err: any) {
-      // git diff returns exit code 1 when differences exist.
-      if (typeof err?.stdout === "string" && err.stdout.length > 0) content = err.stdout;
-      else content = `Unable to generate a unified diff: ${String(err)}`;
+      try {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", baselineDir, record.rootDir], { timeout: 120000 });
+        content = stdout;
+      } catch (err: any) {
+        // git diff returns exit code 1 when differences exist.
+        if (typeof err?.stdout === "string" && err.stdout.length > 0) content = err.stdout;
+        else content = `Unable to generate a unified diff: ${String(err)}`;
+      }
+      content = this.redactor.redactText(content);
+      await writeFile(patchPath, content);
+    } finally {
+      await rm(baselineDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    await writeFile(patchPath, content);
-    await rm(baselineDir, { recursive: true, force: true }).catch(() => undefined);
     return { path: patchPath, content };
   }
 
   private isInternalPath(filePath: string): boolean {
-    return filePath.startsWith(".envia/") || filePath === "ledger.jsonl" || filePath.endsWith(".tmp");
+    return filePath.startsWith(".envia/") || filePath === "ledger.jsonl" || filePath === "jail.log" || filePath.endsWith(".tmp");
   }
 }
 

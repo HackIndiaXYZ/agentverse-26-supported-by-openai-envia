@@ -35,4 +35,52 @@ describe("MCP server", () => {
     await client.callTool({ name: "envia_sandbox_destroy", arguments: { id } });
     await client.close();
   }, 30000);
+
+  it("runs a campaign and applies a candidate through MCP", async () => {
+    const tmp = path.join(process.env.TEMP ?? "C:/tmp", `envia-mcp-camp-${Date.now()}`);
+    const projectDir = path.join(tmp, "project");
+    await (await import("node:fs/promises")).mkdir(projectDir, { recursive: true });
+    await (await import("node:fs/promises")).writeFile(path.join(projectDir, "app.txt"), "hello");
+
+    const transport = new StdioClientTransport({
+      command: "node",
+      args: [path.resolve("dist/mcp/server.js")],
+      env: { ...process.env, ENVIA_HOME: path.join(tmp, "envia-home"), ENVIA_ALLOW_HOST_COMMANDS: "1" },
+    });
+    const client = new Client({ name: "test", version: "0.0.1" });
+    await client.connect(transport);
+
+    const created = await client.callTool({ name: "envia_campaign_create", arguments: {
+      name: "mcp-camp",
+      sourceProject: projectDir,
+      objective: "test",
+      experiments: [{ name: "a", command: process.execPath, args: ["-e", "const fs=require('fs'); fs.writeFileSync('app.txt','changed')"] }],
+    } });
+    const campaign = JSON.parse((created.content as any)[0].text).campaign;
+
+    const started = await client.callTool({ name: "envia_campaign_start", arguments: {
+      id: campaign.id,
+      serial: true,
+      experiments: [{ name: "a", command: process.execPath, args: ["-e", "const fs=require('fs'); fs.writeFileSync('app.txt','changed')"] }],
+    } });
+    const startedCampaign = JSON.parse((started.content as any)[0].text).campaign;
+    const expId = startedCampaign.experiments[0].experimentId;
+
+    await client.callTool({ name: "envia_campaign_select_candidate", arguments: { id: campaign.id, experimentId: expId } });
+    await client.callTool({ name: "envia_campaign_verify_candidate", arguments: { id: campaign.id } });
+    await client.callTool({ name: "envia_campaign_approve", arguments: { id: campaign.id, approved: true, reason: "ok" } });
+    const applied = await client.callTool({ name: "envia_campaign_apply", arguments: { id: campaign.id, confirm: true } });
+    const appliedCampaign = JSON.parse((applied.content as any)[0].text).campaign;
+    expect(appliedCampaign.candidate.promoted).toBe(true);
+
+    const source = await (await import("node:fs/promises")).readFile(path.join(projectDir, "app.txt"), "utf8");
+    expect(source).toBe("changed");
+
+    const txs = await client.callTool({ name: "envia_transaction_list", arguments: {} });
+    const transactions = JSON.parse((txs.content as any)[0].text).transactions;
+    expect(transactions.some((tx: any) => tx.state === "committed")).toBe(true);
+
+    await client.close();
+    await (await import("node:fs/promises")).rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+  }, 60000);
 });

@@ -11,6 +11,8 @@ import { VolumeManager } from "../volumes/manager.js";
 import { NetworkManager } from "../network/manager.js";
 import { AgentRunManager } from "../agent/run-manager.js";
 import { ExperimentManager } from "../experiments/manager.js";
+import { CampaignManager } from "../campaigns/manager.js";
+import { RecoveryManager } from "../recovery/manager.js";
 import { FaultManager } from "../faults/manager.js";
 import { RetentionManager } from "../retention/manager.js";
 import { JailhouseManager } from "../jailhouse/manager.js";
@@ -34,6 +36,8 @@ const agentRunManager = new AgentRunManager(baseDir, jailor, imageStore, allowUn
 await agentRunManager.init();
 const experimentManager = new ExperimentManager(baseDir, jailor, imageStore);
 await experimentManager.init();
+const campaignManager = new CampaignManager(baseDir, experimentManager);
+await campaignManager.init();
 const faultManager = new FaultManager(baseDir, jailor);
 const retentionManager = new RetentionManager(baseDir);
 await retentionManager.init();
@@ -46,8 +50,9 @@ const server = new McpServer(
 );
 
 function textResult(obj: unknown) {
+  const redactor = new SecretRedactor();
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(redactor.redactObject(obj), null, 2) }],
   };
 }
 
@@ -646,6 +651,173 @@ server.registerTool(
   { title: "Export candidate patch", description: "Export a reviewable patch for a candidate change set.", inputSchema: { id: z.string().min(1), checkpointId: z.string().optional() } },
   async (args) => {
     try { return textResult({ patch: await experimentManager.exportPatch(args.id, args.checkpointId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+// --- campaign tools ---
+server.registerTool(
+  "envia_campaign_create",
+  {
+    title: "Create campaign",
+    description: "Create a campaign coordinating multiple experiments.",
+    inputSchema: {
+      name: z.string().min(1),
+      sourceProject: z.string().min(1),
+      objective: z.string().min(1),
+      successCriteria: z.string().optional(),
+      maxConcurrency: z.number().int().positive().optional(),
+      experiments: z.array(z.object({
+        name: z.string().min(1),
+        hypothesis: z.string().optional(),
+        objective: z.string().optional(),
+        method: z.string().optional(),
+        expectedOutcome: z.string().optional(),
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        timeoutMs: z.number().int().positive().optional(),
+      })),
+    },
+  },
+  async (args) => {
+    try {
+      const record = await campaignManager.create(args.name, {
+        sourceProject: args.sourceProject,
+        objective: args.objective,
+        successCriteria: args.successCriteria,
+        maxConcurrency: args.maxConcurrency,
+        experiments: args.experiments,
+      });
+      return textResult({ campaign: record });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_status",
+  { title: "Campaign status", description: "Inspect a campaign.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.inspect(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_list",
+  { title: "List campaigns", description: "List campaigns.", inputSchema: {} },
+  async () => {
+    try { return textResult({ campaigns: await campaignManager.list() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_start",
+  { title: "Start campaign", description: "Start or resume eligible campaign experiments.", inputSchema: { id: z.string().min(1), serial: z.boolean().optional(), experiments: z.array(z.object({ name: z.string(), command: z.string().optional(), args: z.array(z.string()).optional(), timeoutMs: z.number().int().positive().optional() })).optional() } },
+  async (args) => {
+    try {
+      const record = await campaignManager.inspect(args.id);
+      const definitions = (args.experiments ?? record.experiments.map((e) => ({ name: e.name, command: undefined, args: undefined, timeoutMs: undefined })));
+      const result = await campaignManager.start(args.id, definitions as any, { serial: args.serial });
+      return textResult({ campaign: result });
+    } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_cancel",
+  { title: "Cancel campaign", description: "Cancel a campaign and its experiments.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.cancel(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_compare",
+  { title: "Compare campaign", description: "Compare campaign experiments.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.compare(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_report",
+  { title: "Campaign report", description: "Generate a campaign report.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ report: await campaignManager.report(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_select_candidate",
+  { title: "Select candidate", description: "Select a candidate experiment.", inputSchema: { id: z.string().min(1), experimentId: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.selectCandidate(args.id, args.experimentId) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_verify_candidate",
+  { title: "Verify candidate", description: "Verify a selected candidate.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.verifyCandidate(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_export_patch",
+  { title: "Export candidate patch", description: "Export a reviewable candidate patch.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ patch: await campaignManager.exportCandidatePatch(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_approve",
+  { title: "Approve candidate", description: "Approve or reject a candidate.", inputSchema: { id: z.string().min(1), approved: z.boolean(), reason: z.string().optional() } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.approveCandidate(args.id, args.approved, args.reason) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_apply",
+  { title: "Apply candidate", description: "Apply an approved candidate to the source project with explicit confirmation.", inputSchema: { id: z.string().min(1), confirm: z.boolean() } },
+  async (args) => {
+    try { return textResult({ campaign: await campaignManager.applyCandidate(args.id, args.confirm) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_transaction_list",
+  { title: "List application transactions", description: "List candidate application transactions.", inputSchema: {} },
+  async () => {
+    try { return textResult({ transactions: await campaignManager.getTransactionManager().list() }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_transaction_status",
+  { title: "Inspect application transaction", description: "Inspect a candidate application transaction.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ transaction: await campaignManager.getTransactionManager().inspect(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_transaction_recover",
+  { title: "Recover application transaction", description: "Recover an interrupted application transaction.", inputSchema: { id: z.string().min(1) } },
+  async (args) => {
+    try { return textResult({ transaction: await campaignManager.getTransactionManager().recover(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
+  "envia_campaign_recover",
+  { title: "Recover experiment", description: "Run a bounded recovery loop for an experiment.", inputSchema: { campaignId: z.string().min(1), experimentId: z.string().min(1), maxAttempts: z.number().int().positive().optional(), timeoutMs: z.number().int().positive().optional() } },
+  async (args) => {
+    try {
+      const campaign = await campaignManager.recoverExperiment(args.campaignId, args.experimentId, { maxAttempts: args.maxAttempts, timeoutMs: args.timeoutMs });
+      const lastAttempt = campaign.recoveryAttempts[campaign.recoveryAttempts.length - 1];
+      return textResult({ campaign, recovery: { attempts: campaign.recoveryAttempts.length, succeeded: lastAttempt?.outcome === "succeeded", stoppedReason: lastAttempt ? "see attempt history" : "no attempts" } });
+    } catch (e) { return errorResult(e); }
   }
 );
 
