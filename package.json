@@ -1,12 +1,34 @@
 {
   "name": "envia",
   "version": "0.1.0",
-  "description": "Envia: hermetic, reproducible sandboxed environments for AI agent runs. MCP server + plugin.",
+  "description": "Envia: jail-themed container platform and MCP server for building images, running bounded workloads, managing volumes, and executing AI-agent experiments with audit ledgers, candidate diffs, approval gates, and transactional application.",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "envia": "dist/cli/main.js",
     "envia-mcp": "dist/mcp/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "commands",
+    ".claude-plugin",
+    ".mcp.json",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia.git"
+  },
+  "homepage": "https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia",
+  "bugs": {
+    "url": "https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia/issues"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -15,7 +37,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepack": "npm run build"
   },
   "keywords": [
     "mcp",
