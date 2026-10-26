@@ -1,4 +1,6 @@
 import { mkdir, readFile, writeFile, rm, readdir, rename } from "node:fs/promises";
+import { EvaluationEngine, DEFAULT_EVALUATION_CONFIG } from "../evaluation/engine.js";
+import type { ExperimentEvidence, EvaluationConfig } from "../evaluation/types.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -31,6 +33,7 @@ export class CampaignManager {
   private redactor: SecretRedactor;
   private lockManager: LockManager;
   private transactionManager: TransactionManager;
+  private evaluationEngine = new EvaluationEngine();
   private cancelFlags = new Set<string>();
 
   constructor(baseDir: string, experimentManager: ExperimentManager, recoveryProvider?: any, transactionManager?: TransactionManager) {
@@ -397,6 +400,38 @@ export class CampaignManager {
     })));
     await this.write(record);
     return record;
+    });
+  }
+
+  async evaluateCampaign(id: string, input: { config?: EvaluationConfig; evidence?: Record<string, ExperimentEvidence> } = {}): Promise<any> {
+    return this.withLock(id, async () => {
+      const record = await this.read(id);
+      const config = input.config ?? record.evaluationConfig ?? DEFAULT_EVALUATION_CONFIG;
+      const configErrors = this.evaluationEngine.validateConfig(config);
+      if (configErrors.length > 0) throw new Error(`invalid evaluation config: ${configErrors.join("; ")}`);
+
+      const candidates = [];
+      for (const campaignExperiment of record.experiments) {
+        if (!campaignExperiment.experimentId) continue;
+        const experiment = await this.experimentManager.inspect(campaignExperiment.experimentId);
+        const commandFailures = experiment.commands.filter((command) => command.exitCode !== 0 || command.timedOut).length;
+        const baseEvidence: ExperimentEvidence = {
+          commandFailures,
+          commandCount: experiment.commands.length,
+        };
+        const providedEvidence = input.evidence?.[campaignExperiment.experimentId] ?? {};
+        candidates.push({
+          experimentId: campaignExperiment.experimentId,
+          name: campaignExperiment.name,
+          evidence: { ...baseEvidence, ...providedEvidence },
+        });
+      }
+
+      const report = this.evaluationEngine.evaluateCampaign(config, id, candidates);
+      record.evaluationConfig = config;
+      record.evaluations = [...(record.evaluations ?? []), report];
+      await this.write(record);
+      return report;
     });
   }
 

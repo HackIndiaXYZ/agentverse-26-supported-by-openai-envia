@@ -746,6 +746,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "envia_campaign_evaluate",
+  {
+    title: "Evaluate campaign",
+    description: "Evaluate campaign candidates using explicit recorded evidence and configurable criteria.",
+    inputSchema: {
+      id: z.string().min(1),
+      config: z.any().optional(),
+      evidence: z.record(z.string(), z.any()).optional(),
+    },
+  },
+  async (args) => {
+    try { return textResult({ evaluation: await campaignManager.evaluateCampaign(args.id, { config: args.config, evidence: args.evidence }) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
   "envia_campaign_select_candidate",
   { title: "Select candidate", description: "Select a candidate experiment.", inputSchema: { id: z.string().min(1), experimentId: z.string().min(1) } },
   async (args) => {

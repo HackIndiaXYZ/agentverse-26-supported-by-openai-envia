@@ -1,3 +1,5 @@
+import type { EvaluationConfig, EvaluationReport } from "../evaluation/types.js";
+
 export type CampaignStatus = "planned" | "ready" | "running" | "evaluating" | "completed" | "failed" | "cancelled" | "blocked" | "interrupted";
 
 export interface CampaignExperimentDefinition {
@@ -76,4 +78,6 @@ export interface CampaignRecord {
   recoveryAttempts: CampaignRecoveryAttempt[];
   report?: Record<string, unknown>;
   failure?: string;
+  evaluationConfig?: EvaluationConfig;
+  evaluations?: EvaluationReport[];
 }
