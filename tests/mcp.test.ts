@@ -99,7 +99,8 @@ describe("MCP server", () => {
     expect(names).toContain("envia_campaign_recommend_next");
     expect(names).toContain("envia_campaign_plan");
     expect(names).toContain("envia_campaign_approve_plan");
-    expect(names.length).toBe(65);
+    expect(names).toContain("envia_campaign_compare_evidence");
+    expect(names.length).toBe(66);
 
     const invalidPlan = await client.callTool({
       name: "envia_campaign_plan",

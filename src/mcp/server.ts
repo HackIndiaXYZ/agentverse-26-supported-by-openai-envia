@@ -786,6 +786,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "envia_campaign_compare_evidence",
+  {
+    title: "Compare campaign evidence",
+    description: "Compare candidates using recorded evidence and the configured comparison policy.",
+    inputSchema: { id: z.string().min(1) },
+  },
+  async (args) => {
+    try { return textResult({ comparison: await campaignManager.compareEvidence(args.id) }); } catch (e) { return errorResult(e); }
+  }
+);
+
+server.registerTool(
   "envia_campaign_plan",
   {
     title: "Plan campaign",

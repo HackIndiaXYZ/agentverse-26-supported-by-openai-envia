@@ -109,7 +109,7 @@ Installed packages also expose `envia` and `envia-mcp` binaries.
 
 ## MCP tools
 
-Envia registers 65 MCP tools across these groups:
+Envia registers 66 MCP tools across these groups:
 
 | Group | Examples |
 |---|---|

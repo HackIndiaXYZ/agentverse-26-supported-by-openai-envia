@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile, rm, readdir, rename } from "node:fs/promises";
 import { EvaluationEngine, DEFAULT_EVALUATION_CONFIG } from "../evaluation/engine.js";
+import { DEFAULT_COMPARISON_POLICY } from "../evaluation/types.js";
 import type { ExperimentEvidence, EvaluationConfig } from "../evaluation/types.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -673,6 +674,33 @@ export class CampaignManager {
       await this.write(record);
       return record;
     });
+  }
+
+  async compareEvidence(id: string): Promise<Record<string, unknown>> {
+    let record = await this.read(id);
+    let evaluation = record.evaluations?.[record.evaluations.length - 1];
+    if (!evaluation) {
+      evaluation = await this.evaluateCampaign(id, {});
+      record = await this.read(id);
+      evaluation = record.evaluations?.[record.evaluations.length - 1] ?? evaluation;
+    }
+    const policyComparisons = [];
+    const candidates = evaluation!.candidates;
+    for (let i = 0; i < candidates.length; i++) {
+      for (let j = i + 1; j < candidates.length; j++) {
+        policyComparisons.push({
+          leftId: candidates[i].experimentId,
+          rightId: candidates[j].experimentId,
+          ...this.evaluationEngine.comparePolicy(candidates[i], candidates[j], DEFAULT_COMPARISON_POLICY),
+        });
+      }
+    }
+    return {
+      campaignId: id,
+      evaluation,
+      policyComparisons,
+      policy: DEFAULT_COMPARISON_POLICY,
+    };
   }
 
   async report(id: string): Promise<Record<string, unknown>> {
