@@ -1,31 +1,45 @@
 # Envia
 
-**Envia** is an open-source jail-themed container platform and MCP server for building images, running isolated workloads, managing volumes, and executing AI-agent runs with audit ledgers and change gates.
+**Envia** is an open-source, jail-themed container platform and MCP server. It builds images from Jailfiles, runs bounded jails, manages volumes and networks, and executes AI-agent experiments with checkpoints, comparison, candidate patches, approval gates, and transactional application.
 
 Official repository: https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia
 
 ## What Envia does
 
-Envia gives an agent a disposable working directory plus bounded file, snapshot, timeout, output, and audit controls. It is designed to reduce accidental host contamination and make agent runs reproducible and auditable.
+Envia gives an agent a disposable copy of a project plus bounded file, snapshot, timeout, output, and audit controls. It is designed to reduce accidental host contamination and make agent runs reproducible, inspectable, and reversible.
 
 Important honesty note: an Envia sandbox is an **isolated working directory with path and size controls**, not an operating-system security boundary. Arbitrary host command execution is **disabled by default**. When enabled through an explicit trusted-host mode, commands run on the host and are not isolated.
 
+## Why an AI coding agent would use it
+
+- Run experiments in separate copies of a source project instead of editing the source directly.
+- Checkpoint and restore filesystem state during an investigation.
+- Compare experiment outcomes and evidence.
+- Produce a reviewable candidate patch before changing the source project.
+- Require explicit approval and confirmation before applying a candidate.
+- Apply approved changes transactionally with rollback and recovery support.
+- Keep append-only audit ledgers and redact common secrets from tool output.
+- Manage retention, disk usage, and bounded fault injection for testing.
+
 ## Architecture
 
-```
+```text
 src/
-  core/        # SandboxManager engine and types; shared by MCP and plugin
-  mcp/         # MCP server (stdio) exposing sandbox tools
-commands/      # Claude Code slash commands
-.claude-plugin/# Plugin manifest
-.mcp.json      # Plugin MCP wiring
-tests/         # Unit, integration, and adversarial security tests
+  core/        Sandbox engine, types, path and size controls
+  runtime/     Jail lifecycle, state store, journal, backends, jailor
+  images/      Jailfile parsing, image store, tags, layers, build cache
+  volumes/     Named volumes and best-effort mounts
+  network/     Network metadata and Linux bridge/veth support
+  jailhouse/   Multi-service orchestration
+  agent/       Agent runs and ledgers
+  experiments/ Checkpoints, branches, replay, comparison, change sets
+  campaigns/   Multi-experiment campaigns and candidate workflow
+  transactions/ Journaled candidate application and recovery
+  coordination/ Cross-process locks
+  security/    Redaction and source-project path protection
+  mcp/         MCP server and tool registration
+  cli/         Command-line interface
 ```
-
-Core responsibilities:
-- `src/core/sandbox.ts`: sandbox lifecycle, path canonicalization, snapshots, restore, run orchestration, audit log.
-- `src/core/types.ts`: shared types and policy limits.
-- `src/mcp/server.ts`: MCP tool registration and input validation.
 
 ## Requirements
 
@@ -33,14 +47,16 @@ Core responsibilities:
 - npm
 - `tar` (available by default on Windows 10+, macOS, and most Linux distributions)
 - Python 3 (only for a few adversarial test fixtures)
+- Claude Code CLI (optional, for plugin validation)
 
-## Install
+## Install from source
 
 ```bash
 git clone https://github.com/HackIndiaXYZ/agentverse-26-supported-by-openai-envia.git
 cd agentverse-26-supported-by-openai-envia
-npm install
+npm ci
 npm run build
+npm test
 ```
 
 ## Run the MCP server
@@ -49,11 +65,16 @@ npm run build
 npm start
 ```
 
-The server speaks MCP over stdio. Configure clients to launch `node /absolute/path/to/dist/mcp/server.js`.
+The server speaks MCP over stdio. Configure clients to launch:
+
+```text
+node /absolute/path/to/dist/mcp/server.js
+```
 
 Environment:
-- `ENVIA_HOME` — storage root (default `~/.envia`)
-- `ENVIA_ALLOW_HOST_COMMANDS=1` — explicitly enable trusted-host command execution (default disabled)
+
+- `ENVIA_HOME` - storage root (default `~/.envia`)
+- `ENVIA_ALLOW_HOST_COMMANDS=1` - explicitly enable trusted-host command execution (default disabled)
 
 ## MCP client configuration
 
@@ -63,7 +84,7 @@ Environment:
     "envia": {
       "command": "node",
       "args": ["/absolute/path/to/dist/mcp/server.js"],
-      "env": { "ENVIA_HOME": "/home/you/.envia" }
+      "env": { "ENVIA_HOME": "/absolute/path/to/.envia" }
     }
   }
 }
@@ -73,26 +94,34 @@ Environment:
 
 1. Build first: `npm run build`.
 2. Validate: `claude plugin validate .`
-3. Install from local path according to your Claude Code version, or package it through a marketplace.
+3. Install from a local path according to your Claude Code version.
 
 The plugin registers the `envia` MCP server and `/envia`, `/envia-create`, `/envia-run`.
 
+## CLI
+
+```bash
+node dist/cli/main.js system doctor
+node dist/cli/main.js runtime capabilities
+```
+
+Installed packages also expose `envia` and `envia-mcp` binaries.
+
 ## MCP tools
 
-| Tool | Purpose |
+Envia registers 60 MCP tools across these groups:
+
+| Group | Examples |
 |---|---|
-| `envia_sandbox_create` | Create sandbox (`name`, optional limits/network) |
-| `envia_sandbox_list` | List active sandboxes |
-| `envia_sandbox_get` | Get sandbox details |
-| `envia_sandbox_destroy` | Destroy sandbox and files |
-| `envia_sandbox_run` | Run command in trusted-host mode only |
-| `envia_sandbox_write_file` | Write UTF-8 file (size-limited) |
-| `envia_sandbox_read_file` | Read UTF-8 file |
-| `envia_sandbox_list_files` | List directory |
-| `envia_sandbox_snapshot` | Create tar.gz snapshot |
-| `envia_sandbox_snapshots` | List snapshots |
-| `envia_sandbox_restore` | Restore snapshot safely |
-| `envia_audit_log` | Read recent audit entries |
+| Sandbox | `envia_sandbox_create`, `envia_sandbox_run`, `envia_sandbox_snapshot` |
+| Jails | `envia_jail_create`, `envia_jail_start`, `envia_jail_exec` |
+| Images | `envia_image_list` |
+| Volumes and networks | `envia_volume_list`, `envia_network_list` |
+| Agent runs | `envia_agent_run` |
+| Experiments | `envia_experiment_create`, `envia_experiment_checkpoint`, `envia_experiment_compare` |
+| Campaigns | `envia_campaign_create`, `envia_campaign_start`, `envia_campaign_apply` |
+| Transactions | `envia_transaction_list`, `envia_transaction_recover` |
+| Redaction, retention, faults | `envia_redaction_policy`, `envia_retention_preview`, `envia_fault_types` |
 
 ## Security model
 
@@ -100,27 +129,26 @@ The plugin registers the `envia` MCP server and `/envia`, `/envia-create`, `/env
 
 - Sandboxes are stored under a canonicalized base directory.
 - File read/write/list paths are resolved and checked against the sandbox root and explicitly allowed paths.
-- Symlink escapes are rejected during path canonicalization and file operations.
-- NUL bytes and path traversal are rejected.
-- File writes have a configurable maximum size.
-- Command execution is disabled unless `ENVIA_ALLOW_HOST_COMMANDS=1` and the sandbox policy allows it.
-- Command runs have timeouts, output caps, and process-tree termination attempts.
-- Dangerous environment variables are rejected.
-- Snapshots are validated for entry type, absolute paths, traversal, and symlink entries.
-- Restore extracts into a staging directory, validates the tree, then replaces sandbox contents without following symlinks.
-- Snapshot and restore enforce size limits.
-- Audit entries are appended for operations and outcomes; malformed audit lines are skipped on read.
+- Symlink and junction escapes are rejected where the host supports the required checks.
+- Host command execution is disabled unless `ENVIA_ALLOW_HOST_COMMANDS=1` is set and a sandbox opts in.
+- Resource limits bound runtime, output, and file size.
+- Snapshots and restores use a managed tar format with path checks.
+- Audit logs record sandbox operations.
+- Campaigns and experiments use checkpoints, locks, journals, and approval gates.
+- Candidate application requires explicit approval and a separate confirmation.
+- Secret redaction is applied to tool output and exported patches.
 
 ### Not enforced / limitations
 
-- No OS-level isolation, container, or VM boundary.
-- Network access is only influenced through environment variables unless a real backend is added.
-- Trusted-host command execution is not sandboxed and can access the host.
-- A command can read host paths it knows about; Envia's filesystem controls apply to Envia file APIs, not to arbitrary processes.
-- Symlink race (TOCTOU) protection is best-effort; O_NOFOLLOW is not available on Windows in Node's constants.
-- Plugin runtime compatibility is validated by manifest shape; full runtime behavior depends on the Claude Code version.
+- No OS-level isolation, container, or VM boundary on the Windows host-process backend.
+- Network access is metadata-only unless a real isolated backend is used.
+- Multi-file application is recoverable but not globally atomic.
+- Lock ownership has PID-reuse limitations.
+- Provider timeout and cancellation guarantees are limited.
+- Secret redaction is pattern-based and cannot detect every secret.
+- Filesystem durability depends on host filesystem behavior.
 
-## Safe usage examples
+## Safe usage example
 
 Create a sandbox and write a file:
 
@@ -146,16 +174,14 @@ envia_sandbox_run id="<id>" command="node" args=["-e","console.log(process.cwd()
 
 ```bash
 npm run dev          # run via tsx
-npm run lint         # tsc --noEmit
-npm run build        # tsc
-npm test             # vitest
+npm run lint         # TypeScript type check
+npm run build        # compile to dist/
+npm test             # run Vitest suite
 ```
 
 ## Tests
 
-- `tests/core.test.ts` — lifecycle, file operations, run, timeout, snapshot/restore.
-- `tests/mcp.test.ts` — MCP integration and tool errors.
-- `tests/security.test.ts` — traversal, symlinks, snapshots, command limits, audit, cleanup.
+The suite covers core sandbox behavior, MCP integration, security, runtime, images, volumes, jailhouse orchestration, agent runs, experiments, campaigns, locks, transactions, redaction, retention, and faults.
 
 Run:
 
@@ -168,14 +194,15 @@ npm test
 - On Windows, creating symlinks may require privileges; tests use directory junctions when needed.
 - Process-tree termination uses `taskkill` on Windows and process-group signaling on POSIX.
 - Network blocking is advisory.
+- The Linux namespace backend is implemented but was not verified on this Windows host.
 
 ## Reproducible security evaluation
 
 See `docs/security-evaluation.md` for threats, expected outcomes, actual outcomes, and pass/fail status.
 
-## Commit and push status
+## Release status
 
-Built and tested locally; commits pushed to `main` of the official repository.
+This repository is being prepared as the Envia v0.1.0 release candidate. No release tag or package has been published from this working tree.
 
 ## License
 
